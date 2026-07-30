@@ -1,8 +1,12 @@
 //! This is the one message channel for the application. The main loop does a
-//! blocking receive on it. Thus the process uses no CPU when it is idle. The
-//! input thread and the git workers send to clones of the same sender.
-use ratatui::crossterm::event::{self, Event, KeyEvent};
+//! blocking receive on it. The input thread and the git workers send to
+//! clones of the same sender.
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
+use std::time::Duration;
+
+use ratatui::crossterm::event::{self, Event, KeyEvent};
 
 use crate::git::Resp;
 
@@ -10,15 +14,29 @@ pub enum Msg {
     Key(KeyEvent),
     Resize,
     Git(Resp),
+    Refresh,
 }
 
-pub fn spawn_input(tx: Sender<Msg>) {
+/// Start the input thread. When `pause` is set, the thread does not read
+/// the terminal. The main loop sets it before it runs a child process that
+/// needs the terminal, for example git push.
+// ponytail: the poll wakes five times each second. The cost is near zero.
+// A blocking read would steal terminal input from child processes.
+pub fn spawn_input(tx: Sender<Msg>, pause: Arc<AtomicBool>) {
     std::thread::spawn(move || {
-        while let Ok(ev) = event::read() {
-            let msg = match ev {
-                Event::Key(k) => Msg::Key(k),
-                Event::Resize(..) => Msg::Resize,
-                _ => continue,
+        loop {
+            if pause.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(50));
+                continue;
+            }
+            if !event::poll(Duration::from_millis(200)).unwrap_or(false) {
+                continue;
+            }
+            let msg = match event::read() {
+                Ok(Event::Key(k)) => Msg::Key(k),
+                Ok(Event::Resize(..)) => Msg::Resize,
+                Ok(_) => continue,
+                Err(_) => break,
             };
             if tx.send(msg).is_err() {
                 break;

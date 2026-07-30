@@ -4,6 +4,7 @@ mod git;
 mod keys;
 mod ui;
 
+
 fn main() -> anyhow::Result<()> {
     // Accept a repository path as the first argument. The benchmark harness
     // uses this.

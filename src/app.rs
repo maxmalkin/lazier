@@ -1,10 +1,16 @@
 use anyhow::Result;
 use ratatui::DefaultTerminal;
-use ratatui::crossterm::event::KeyEventKind;
+use ratatui::crossterm::event::{KeyCode, KeyEventKind};
+use ratatui::crossterm::execute;
+use ratatui::crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 
 use crate::event::{self, Msg};
-use crate::git::{self, CommitEntry, DiffTarget, FileEntry, Git, Req, Resp};
+use crate::git::{self, CommitEntry, DiffTarget, FileEntry, Git, Req, Resp, patch};
 use crate::keys::{Action, action_for};
 use crate::ui;
 
@@ -24,15 +30,37 @@ pub struct RepoState {
     pub diff: String,
 }
 
+pub enum InputPurpose {
+    CommitMsg,
+    NewBranch,
+    StashMsg,
+}
+
+pub enum ConfirmAction {
+    DeleteBranch(String),
+    DropStash(usize),
+}
+
+pub enum Mode {
+    Normal,
+    Input { prompt: &'static str, buffer: String, purpose: InputPurpose },
+    Confirm { prompt: String, action: ConfirmAction },
+    Hunks { path: String, header: String, hunks: Vec<String>, cursor: usize },
+}
+
 pub struct App {
     pub focus: usize,
     pub selected: [usize; 5],
     pub quit: bool,
     pub repo: RepoState,
+    pub mode: Mode,
+    pub message: String,
     git: Option<Git>,
     log_inflight: bool,
     diff_seq: u64,
     diff_target: Option<DiffTarget>,
+    pending_suspend: Option<Vec<String>>,
+    pause: Arc<AtomicBool>,
 }
 
 impl App {
@@ -42,23 +70,24 @@ impl App {
             selected: [0; 5],
             quit: false,
             repo: RepoState::default(),
+            mode: Mode::Normal,
+            message: String::new(),
             git: None,
             log_inflight: false,
             diff_seq: 0,
             diff_target: None,
+            pending_suspend: None,
+            pause: Arc::new(AtomicBool::new(false)),
         }
     }
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         let (tx, rx) = mpsc::channel();
-        event::spawn_input(tx.clone());
-        let git = git::spawn(tx)?;
-        for req in [Req::Status, Req::Branches, Req::Stashes] {
-            git.send(req);
-        }
-        git.send(Req::LogChunk { count: LOG_CHUNK });
-        self.log_inflight = true;
+        event::spawn_input(tx.clone(), self.pause.clone());
+        let git = git::spawn(tx.clone())?;
+        git::watch::spawn(git.git_dir.clone(), tx);
         self.git = Some(git);
+        self.refresh_all();
 
         while !self.quit {
             terminal.draw(|f| ui::render(f, self))?;
@@ -69,20 +98,115 @@ impl App {
                 self.update(msg);
             }
             self.flush_requests();
+            if let Some(args) = self.pending_suspend.take() {
+                self.suspend_and_run(terminal, args)?;
+            }
         }
+        Ok(())
+    }
+
+    /// Give the terminal to a git child process, for example push or an
+    /// editor for a commit message. Restore the terminal after it.
+    fn suspend_and_run(&mut self, terminal: &mut DefaultTerminal, args: Vec<String>) -> Result<()> {
+        let Some(git) = &self.git else { return Ok(()) };
+        self.pause.store(true, Ordering::Relaxed);
+        disable_raw_mode()?;
+        execute!(std::io::stdout(), LeaveAlternateScreen)?;
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&git.root)
+            .args(&args)
+            .status();
+        enable_raw_mode()?;
+        execute!(std::io::stdout(), EnterAlternateScreen)?;
+        terminal.clear()?;
+        self.pause.store(false, Ordering::Relaxed);
+        self.message = match status {
+            Ok(s) if s.success() => format!("git {} done", args.join(" ")),
+            Ok(s) => format!("git {} failed ({s})", args.join(" ")),
+            Err(e) => e.to_string(),
+        };
+        self.refresh_all();
         Ok(())
     }
 
     pub fn update(&mut self, msg: Msg) {
         match msg {
-            Msg::Key(key) if key.kind == KeyEventKind::Press => {
-                if let Some(action) = action_for(key) {
+            Msg::Key(key) if key.kind == KeyEventKind::Press => self.handle_key(key),
+            Msg::Git(resp) => self.apply_resp(resp),
+            Msg::Refresh => self.refresh_all(),
+            // A resize needs no work. The next draw uses the new size.
+            _ => {}
+        }
+    }
+
+    fn handle_key(&mut self, key: ratatui::crossterm::event::KeyEvent) {
+        match &mut self.mode {
+            Mode::Normal => {
+                if let Some(action) = action_for(key, self.focus) {
                     self.apply(action);
                 }
             }
-            Msg::Git(resp) => self.apply_resp(resp),
-            // A resize needs no work. The next draw uses the new size.
-            _ => {}
+            Mode::Input { buffer, .. } => match key.code {
+                KeyCode::Esc => self.mode = Mode::Normal,
+                KeyCode::Backspace => {
+                    buffer.pop();
+                }
+                KeyCode::Char(c) => buffer.push(c),
+                KeyCode::Enter => {
+                    let Mode::Input { buffer, purpose, .. } = std::mem::replace(&mut self.mode, Mode::Normal) else {
+                        return;
+                    };
+                    self.submit_input(purpose, buffer);
+                }
+                _ => {}
+            },
+            Mode::Confirm { .. } => match key.code {
+                KeyCode::Char('y') => {
+                    let Mode::Confirm { action, .. } = std::mem::replace(&mut self.mode, Mode::Normal) else {
+                        return;
+                    };
+                    let args: Vec<String> = match action {
+                        ConfirmAction::DeleteBranch(name) => svec(&["branch", "-D", &name]),
+                        ConfirmAction::DropStash(i) => svec(&["stash", "drop", &format!("stash@{{{i}}}")]),
+                    };
+                    self.write(args);
+                }
+                _ => self.mode = Mode::Normal,
+            },
+            Mode::Hunks { header, hunks, cursor, .. } => match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => self.mode = Mode::Normal,
+                KeyCode::Char('j') | KeyCode::Down => *cursor = (*cursor + 1).min(hunks.len() - 1),
+                KeyCode::Char('k') | KeyCode::Up => *cursor = cursor.saturating_sub(1),
+                KeyCode::Char(' ') => {
+                    let patch = patch::hunk_patch(header, &hunks[*cursor]);
+                    // Line numbers of the other hunks change after the
+                    // apply. Leave the mode instead of a stale re-use.
+                    self.mode = Mode::Normal;
+                    if let Some(git) = &self.git {
+                        git.send(Req::ApplyPatch { patch, reverse: false });
+                    }
+                }
+                _ => {}
+            },
+        }
+    }
+
+    fn submit_input(&mut self, purpose: InputPurpose, buffer: String) {
+        if buffer.is_empty() {
+            return;
+        }
+        let args: Vec<String> = match purpose {
+            InputPurpose::CommitMsg => svec(&["commit", "-m", &buffer]),
+            InputPurpose::NewBranch => svec(&["checkout", "-b", &buffer]),
+            InputPurpose::StashMsg => svec(&["stash", "push", "-m", &buffer]),
+        };
+        self.write(args);
+    }
+
+    fn write(&mut self, args: Vec<String>) {
+        if let Some(git) = &self.git {
+            git.send(Req::Write(args));
         }
     }
 
@@ -95,6 +219,10 @@ impl App {
             4 => self.repo.stashes.len(),
             _ => 0,
         }
+    }
+
+    fn selected_file(&self) -> Option<&FileEntry> {
+        self.repo.files.get(self.selected[1])
     }
 
     fn apply(&mut self, action: Action) {
@@ -114,11 +242,91 @@ impl App {
                 let sel = &mut self.selected[self.focus];
                 *sel = sel.saturating_sub(1);
             }
-            Action::Refresh => {
-                if let Some(git) = &self.git {
-                    for req in [Req::Status, Req::Branches, Req::Stashes] {
-                        git.send(req);
+            Action::Refresh => self.refresh_all(),
+
+            Action::ToggleStage => {
+                if let Some(f) = self.selected_file() {
+                    let args = if f.staged {
+                        svec(&["restore", "--staged", "--", &f.path])
+                    } else {
+                        svec(&["add", "--", &f.path])
+                    };
+                    self.write(args);
+                }
+            }
+            Action::StageAll => self.write(svec(&["add", "-A"])),
+            Action::CommitPrompt => {
+                self.mode = Mode::Input { prompt: "commit message", buffer: String::new(), purpose: InputPurpose::CommitMsg };
+            }
+            Action::CommitEditor => self.pending_suspend = Some(svec(&["commit"])),
+            Action::StashPrompt => {
+                self.mode = Mode::Input { prompt: "stash message", buffer: String::new(), purpose: InputPurpose::StashMsg };
+            }
+            Action::EnterHunks => {
+                let Some(f) = self.selected_file() else { return };
+                // The diff pane must already show this file. The diff text
+                // is index-to-worktree, thus the hunks fit `apply --cached`.
+                if self.diff_target != Some(DiffTarget::WorktreeFile(f.path.clone())) {
+                    return;
+                }
+                match patch::split_diff(&self.repo.diff) {
+                    Some((header, hunks)) if !hunks.is_empty() => {
+                        self.mode = Mode::Hunks { path: f.path.clone(), header, hunks, cursor: 0 };
                     }
+                    _ => self.message = "no hunks in this file".into(),
+                }
+            }
+            Action::TakeOurs | Action::TakeTheirs => {
+                let side = if matches!(action, Action::TakeOurs) { "--ours" } else { "--theirs" };
+                if let Some(f) = self.selected_file()
+                    && f.mark == 'U'
+                {
+                    let path = f.path.clone();
+                    self.write(svec(&["checkout", side, "--", &path]));
+                    self.write(svec(&["add", "--", &path]));
+                }
+            }
+
+            Action::Checkout => {
+                if let Some(name) = self.repo.branches.get(self.selected[2]) {
+                    let name = name.clone();
+                    self.write(svec(&["checkout", &name]));
+                }
+            }
+            Action::NewBranchPrompt => {
+                self.mode = Mode::Input { prompt: "new branch name", buffer: String::new(), purpose: InputPurpose::NewBranch };
+            }
+            Action::DeleteBranch => {
+                if let Some(name) = self.repo.branches.get(self.selected[2]) {
+                    self.mode = Mode::Confirm {
+                        prompt: format!("delete branch {name}? y/n"),
+                        action: ConfirmAction::DeleteBranch(name.clone()),
+                    };
+                }
+            }
+            Action::Push => self.pending_suspend = Some(svec(&["push"])),
+            Action::Pull => self.pending_suspend = Some(svec(&["pull"])),
+            Action::Fetch => self.pending_suspend = Some(svec(&["fetch"])),
+
+            Action::ApplyStash => {
+                let i = self.selected[4];
+                if i < self.repo.stashes.len() {
+                    self.write(svec(&["stash", "apply", &format!("stash@{{{i}}}")]));
+                }
+            }
+            Action::PopStash => {
+                let i = self.selected[4];
+                if i < self.repo.stashes.len() {
+                    self.write(svec(&["stash", "pop", &format!("stash@{{{i}}}")]));
+                }
+            }
+            Action::DropStash => {
+                let i = self.selected[4];
+                if i < self.repo.stashes.len() {
+                    self.mode = Mode::Confirm {
+                        prompt: format!("drop stash@{{{i}}}? y/n"),
+                        action: ConfirmAction::DropStash(i),
+                    };
                 }
             }
         }
@@ -126,16 +334,24 @@ impl App {
 
     fn apply_resp(&mut self, resp: Resp) {
         match resp {
-            Resp::Status(files) => self.repo.files = files,
+            Resp::Status(files) => {
+                self.repo.files = files;
+                self.clamp(1);
+            }
             Resp::Branches { current, names } => {
                 self.repo.head = current;
                 self.repo.branches = names;
+                self.clamp(2);
             }
-            Resp::Stashes(stashes) => self.repo.stashes = stashes,
+            Resp::Stashes(stashes) => {
+                self.repo.stashes = stashes;
+                self.clamp(4);
+            }
             Resp::LogChunk { entries, done } => {
                 self.repo.commits.extend(entries);
                 self.repo.log_done = done;
                 self.log_inflight = false;
+                self.clamp(3);
             }
             // Ignore a diff for an old selection. Only the last request counts.
             Resp::Diff { seq, text } => {
@@ -143,7 +359,34 @@ impl App {
                     self.repo.diff = text;
                 }
             }
+            Resp::WriteDone { ok, msg } => {
+                self.message = msg;
+                if ok {
+                    self.refresh_all();
+                }
+            }
         }
+    }
+
+    fn clamp(&mut self, panel: usize) {
+        let len = self.panel_len(panel);
+        self.selected[panel] = self.selected[panel].min(len.saturating_sub(1));
+    }
+
+    // ponytail: a write triggers this and the fs watcher can trigger it
+    // again. The refresh is idempotent and the watcher batches events.
+    fn refresh_all(&mut self) {
+        let Some(git) = &self.git else { return };
+        for req in [Req::Status, Req::Branches, Req::Stashes] {
+            git.send(req);
+        }
+        self.repo.commits.clear();
+        self.repo.log_done = false;
+        git.send(Req::LogReset);
+        git.send(Req::LogChunk { count: LOG_CHUNK });
+        self.log_inflight = true;
+        // Force a new diff request for the current selection.
+        self.diff_target = None;
     }
 
     /// Send the requests that the new state makes necessary. The main loop
@@ -160,7 +403,7 @@ impl App {
         }
 
         let target = match self.focus {
-            1 => self.repo.files.get(self.selected[1]).map(|f| DiffTarget::WorktreeFile(f.path.clone())),
+            1 => self.selected_file().map(|f| DiffTarget::WorktreeFile(f.path.clone())),
             3 => self.repo.commits.get(self.selected[3]).map(|c| DiffTarget::Commit(c.id_str().to_string())),
             _ => None,
         };
@@ -170,6 +413,10 @@ impl App {
             git.send(Req::Diff { seq: self.diff_seq, target: target.unwrap() });
         }
     }
+}
+
+fn svec(args: &[&str]) -> Vec<String> {
+    args.iter().map(|s| s.to_string()).collect()
 }
 
 #[cfg(test)]
@@ -223,6 +470,13 @@ mod tests {
         let mut app = demo();
         app.focus = 3;
         app.selected[3] = 99_999;
+        insta::assert_snapshot!(draw(&app, 80, 24).backend());
+    }
+
+    #[test]
+    fn commit_prompt() {
+        let mut app = demo();
+        app.mode = Mode::Input { prompt: "commit message", buffer: "feat: x".into(), purpose: InputPurpose::CommitMsg };
         insta::assert_snapshot!(draw(&app, 80, 24).backend());
     }
 

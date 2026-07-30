@@ -34,10 +34,16 @@ pub fn render_left(frame: &mut Frame, areas: [Rect; 5], app: &App) {
 }
 
 pub fn render_main(frame: &mut Frame, area: Rect, app: &App) {
-    // ponytail: there is no scroll in the diff view. Add scroll in phase 3.
-    let lines: Vec<Line> = app
-        .repo
-        .diff
+    // In hunk mode, show only the hunk under the cursor.
+    let (title, text): (String, &str) = match &app.mode {
+        crate::app::Mode::Hunks { path, hunks, cursor, .. } => {
+            (format!("Stage hunks — {path}"), hunks[*cursor].as_str())
+        }
+        _ => ("Diff".into(), app.repo.diff.as_str()),
+    };
+    // ponytail: there is no scroll in the diff view. Add scroll when a diff
+    // does not fit one screen and that hurts.
+    let lines: Vec<Line> = text
         .lines()
         .take(area.height as usize)
         .map(|l| {
@@ -50,5 +56,5 @@ pub fn render_main(frame: &mut Frame, area: Rect, app: &App) {
             Line::from(l.to_string()).style(style)
         })
         .collect();
-    frame.render_widget(Paragraph::new(lines).block(Block::bordered().title("Diff")), area);
+    frame.render_widget(Paragraph::new(lines).block(Block::bordered().title(title)), area);
 }
