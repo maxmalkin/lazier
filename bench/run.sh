@@ -28,7 +28,7 @@ if [ -d linux ]; then
   hyperfine --warmup 1 -N --style basic \
     -n lazygit "$TUI '2${J}q' 300 lazygit -p linux" \
     -n gitui   "$TUI '2${J}q' 300 gitui -d linux" \
-    ${LAZIER:+-n lazier "$TUI '2${J}q' 300 $LAZIER linux"}
+    ${LAZIER:+-n lazier "$TUI '4${J}q' 300 $LAZIER linux"}
 fi
 
 echo "=== idle CPU % (5s sample, dirty10k) ==="
