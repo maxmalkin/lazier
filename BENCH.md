@@ -31,13 +31,18 @@ each other, not to zero. CPU (user+sys) is the honest startup-work signal.
 | gitui | 0.8 |
 | lazier | — |
 
-### linux.git (1.3M commits) — pending clone
+### linux.git (1.3M commits, blobless clone)
 
 | metric | lazygit | gitui | lazier |
 |---|---|---|---|
-| startup+quit | | | |
-| scroll 300 commits | | | |
-| peak RSS | | | |
+| startup+quit wall | 763 ms | 788 ms | |
+| startup+quit CPU (user+sys) | 460 ms | **1715 ms** | |
+| scroll 300 commits wall | 768 ms | 851 ms | |
+| peak RSS | 68 MB | **230 MB** | |
+
+gitui pays 3.7x the CPU and 3.4x the RAM of lazygit here — libgit2 eagerly
+loading the odb. This is the gap gix's lazy mmap'd packfile access must beat:
+target <68 MB RSS and <460 ms CPU on startup.
 
 ## Phase 2 gate (from the plan)
 
