@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = "1"
 gix = { version = "0.86.0", features = ["status", "max-performance-safe"] }
+notify = "8.2.0"
 ratatui = "0.30"
 
 [dev-dependencies]
