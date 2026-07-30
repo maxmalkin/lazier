@@ -1,2 +1,4 @@
 /target
 /bench/corpora/
+*.md
+!README.md
