@@ -104,7 +104,10 @@ pub fn stashes(repo: &gix::Repository) -> Option<Resp> {
 /// borrows the thread-local repository, thus both stay in this stack frame.
 /// Each request pulls the next `count` commits from the walker.
 pub fn log_thread(shared: Arc<gix::ThreadSafeRepository>, rx: Receiver<usize>, ev: Sender<Msg>) {
-    let repo = shared.to_thread_local();
+    let mut repo = shared.to_thread_local();
+    // The cache keeps decoded delta bases. Without it, the walk decodes the
+    // same base objects again for each commit.
+    repo.object_cache_size(Some(16 * 1024 * 1024));
     let mut walk = repo.head_id().ok().and_then(|id| id.ancestors().all().ok());
     for count in rx {
         let mut entries = Vec::with_capacity(count);
@@ -118,10 +121,10 @@ pub fn log_thread(shared: Arc<gix::ThreadSafeRepository>, rx: Receiver<usize>, e
                             .ok()
                             .and_then(|c| c.message().ok().map(|m| m.summary().to_string()))
                             .unwrap_or_default();
-                        entries.push(CommitEntry {
-                            id: info.id.to_hex_with_len(7).to_string(),
-                            subject,
-                        });
+                        let mut id = [b'0'; 7];
+                        let hex = info.id.to_hex_with_len(7).to_string();
+                        id.copy_from_slice(&hex.as_bytes()[..7]);
+                        entries.push(CommitEntry { id, subject: subject.into() });
                     }
                     Some(Err(_)) => continue,
                     None => {

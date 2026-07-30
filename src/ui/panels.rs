@@ -24,7 +24,7 @@ pub fn render_left(frame: &mut Frame, areas: [Rect; 5], app: &App) {
         },
         &|i| {
             let c = &repo.commits[i];
-            Line::from(format!("{} {}", c.id, c.subject))
+            Line::from(format!("{} {}", c.id_str(), c.subject))
         },
         &|i| Line::from(repo.stashes[i].clone()),
     ];

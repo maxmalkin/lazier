@@ -161,7 +161,7 @@ impl App {
 
         let target = match self.focus {
             1 => self.repo.files.get(self.selected[1]).map(|f| DiffTarget::WorktreeFile(f.path.clone())),
-            3 => self.repo.commits.get(self.selected[3]).map(|c| DiffTarget::Commit(c.id.clone())),
+            3 => self.repo.commits.get(self.selected[3]).map(|c| DiffTarget::Commit(c.id_str().to_string())),
             _ => None,
         };
         if target.is_some() && target != self.diff_target {
@@ -190,7 +190,11 @@ mod tests {
         app.repo.branches = vec!["feature/ui".into(), "main".into()];
         app.repo.stashes = vec!["stash@{0}: WIP on main".into()];
         app.repo.commits = (0..100_000)
-            .map(|i| CommitEntry { id: format!("{:07x}", 0xa0c000 + i), subject: format!("fake: commit subject #{i}") })
+            .map(|i| {
+                let mut id = [b'0'; 7];
+                id.copy_from_slice(format!("{:07x}", 0xa0c000 + i).as_bytes());
+                CommitEntry { id, subject: format!("fake: commit subject #{i}").into() }
+            })
             .collect();
         app.repo.diff = "diff --git a/src/main.rs b/src/main.rs\n+added line\n-removed line".into();
         app

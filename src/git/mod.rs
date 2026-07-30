@@ -15,9 +15,18 @@ pub struct FileEntry {
     pub path: String,
 }
 
+// Keep this struct small. The list can hold more than one million entries.
+// The short id is inline, thus each entry makes only one heap allocation.
 pub struct CommitEntry {
-    pub id: String,
-    pub subject: String,
+    pub id: [u8; 7],
+    pub subject: Box<str>,
+}
+
+impl CommitEntry {
+    pub fn id_str(&self) -> &str {
+        // The id always contains hex digits, thus this cannot fail.
+        std::str::from_utf8(&self.id).unwrap_or("???????")
+    }
 }
 
 pub enum Req {
@@ -81,7 +90,18 @@ pub fn spawn(event_tx: Sender<Msg>) -> anyhow::Result<Git> {
         let repo = shared.to_thread_local();
         for req in rx {
             let resp = match req {
-                Req::Status => read::status(&repo),
+                // A status scan can be slow on a large repository. Run it in
+                // its own thread. Then the other reads do not wait for it.
+                Req::Status => {
+                    let (sh, ev) = (shared.clone(), event_tx.clone());
+                    std::thread::spawn(move || {
+                        let repo = sh.to_thread_local();
+                        if let Some(resp) = read::status(&repo) {
+                            let _ = ev.send(Msg::Git(resp));
+                        }
+                    });
+                    None
+                }
                 Req::Branches => read::branches(&repo),
                 Req::Stashes => read::stashes(&repo),
                 Req::Diff { seq, target } => Some(Resp::Diff { seq, text: display_diff(&root, &target) }),
