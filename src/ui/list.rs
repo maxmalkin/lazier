@@ -1,6 +1,6 @@
-//! Virtualized list: renders only the rows in view, fed by an index->row fn.
-//! Phase 2 hands this lens in the hundreds of thousands — nothing here may
-//! ever iterate 0..len.
+//! This list renders only the rows in view. A function maps an index to a
+//! row. The list length can be very large. Do not iterate the full range in
+//! this file.
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::Line;
@@ -25,7 +25,8 @@ pub fn render(
     if visible == 0 || len == 0 {
         return;
     }
-    // keep the selected row in view, pinned to the bottom once scrolled
+    // Keep the selected row in view. After a scroll, the row stays at the
+    // bottom edge.
     let offset = selected
         .saturating_sub(visible - 1)
         .min(len.saturating_sub(visible));

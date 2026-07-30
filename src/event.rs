@@ -1,11 +1,15 @@
-//! One channel, one loop. Workers and the fs watcher get clones of the same
-//! Sender in phase 2+; the main loop blocks on recv — 0% CPU when idle.
+//! This is the one message channel for the application. The main loop does a
+//! blocking receive on it. Thus the process uses no CPU when it is idle. The
+//! input thread and the git workers send to clones of the same sender.
 use ratatui::crossterm::event::{self, Event, KeyEvent};
 use std::sync::mpsc::Sender;
+
+use crate::git::Resp;
 
 pub enum Msg {
     Key(KeyEvent),
     Resize,
+    Git(Resp),
 }
 
 pub fn spawn_input(tx: Sender<Msg>) {

@@ -1,11 +1,10 @@
 mod list;
 mod panels;
 
-use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::Frame;
+use ratatui::layout::{Constraint, Layout, Rect};
 
 use crate::app::App;
-pub use panels::panel_len;
 
 pub fn render(frame: &mut Frame, app: &App) {
     let [left, main] =
