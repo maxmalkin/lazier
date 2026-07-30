@@ -11,10 +11,13 @@ if pid == 0:
 fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 80, 0, 0))
 os.kill(pid, signal.SIGWINCH)  # in case the app read the size before our ioctl
 
-start, sent, code = time.time(), False, 0
+# A '~' in KEYS splits it into bursts. Send one burst each 0.6s. The app can
+# then load data between the bursts.
+bursts = keys.split('~')
+start, sent, code = time.time(), 0, 0
 while True:
-    if not sent and time.time() - start > 0.7:
-        os.write(fd, keys.encode()); sent = True
+    if sent < len(bursts) and time.time() - start > 0.7 + 0.6 * sent:
+        os.write(fd, bursts[sent].encode()); sent += 1
     if select.select([fd], [], [], 0.05)[0]:
         try:
             if not os.read(fd, 65536): pass
