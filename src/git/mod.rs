@@ -1,9 +1,12 @@
 //! This is the git backend. Reads use gix. Only read.rs can import gix.
-//! Display diffs use the git subprocess.
+//! Writes and display diffs use the git subprocess.
+pub mod patch;
 mod read;
+pub mod watch;
 
+use std::io::Write as _;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::mpsc::{Sender, channel};
 
@@ -29,12 +32,22 @@ impl CommitEntry {
     }
 }
 
+pub enum LogReq {
+    Chunk(usize),
+    Reset,
+}
+
 pub enum Req {
     Status,
     Branches,
     Stashes,
     LogChunk { count: usize },
+    LogReset,
     Diff { seq: u64, target: DiffTarget },
+    /// Run a git command with the given arguments. Capture the output.
+    Write(Vec<String>),
+    /// Apply a patch to the index. Reverse removes it from the index.
+    ApplyPatch { patch: String, reverse: bool },
 }
 
 #[derive(PartialEq, Clone)]
@@ -49,18 +62,24 @@ pub enum Resp {
     Stashes(Vec<String>),
     LogChunk { entries: Vec<CommitEntry>, done: bool },
     Diff { seq: u64, text: String },
+    WriteDone { ok: bool, msg: String },
 }
 
 pub struct Git {
     tx: Sender<Req>,
-    log_tx: Sender<usize>,
+    log_tx: Sender<LogReq>,
+    pub root: PathBuf,
+    pub git_dir: PathBuf,
 }
 
 impl Git {
     pub fn send(&self, req: Req) {
         match req {
             Req::LogChunk { count } => {
-                let _ = self.log_tx.send(count);
+                let _ = self.log_tx.send(LogReq::Chunk(count));
+            }
+            Req::LogReset => {
+                let _ = self.log_tx.send(LogReq::Reset);
             }
             _ => {
                 let _ = self.tx.send(req);
@@ -71,7 +90,7 @@ impl Git {
 
 /// Find the repository at the current directory. Start two read workers.
 /// One worker owns the log walker, which must stay alive between requests.
-/// The other worker does all other reads.
+/// The other worker does all other reads and all writes.
 // ponytail: two threads only. Add a thread pool if the profile shows the need.
 pub fn spawn(event_tx: Sender<Msg>) -> anyhow::Result<Git> {
     let shared = Arc::new(gix::ThreadSafeRepository::discover(".")?);
@@ -79,13 +98,15 @@ pub fn spawn(event_tx: Sender<Msg>) -> anyhow::Result<Git> {
         .work_dir()
         .map(Into::into)
         .unwrap_or_else(|| shared.path().into());
+    let git_dir: PathBuf = shared.path().into();
 
     let (tx, rx) = channel::<Req>();
-    let (log_tx, log_rx) = channel::<usize>();
+    let (log_tx, log_rx) = channel::<LogReq>();
 
     let (repo, ev) = (shared.clone(), event_tx.clone());
     std::thread::spawn(move || read::log_thread(repo, log_rx, ev));
 
+    let worker_root = root.clone();
     std::thread::spawn(move || {
         let repo = shared.to_thread_local();
         for req in rx {
@@ -104,8 +125,10 @@ pub fn spawn(event_tx: Sender<Msg>) -> anyhow::Result<Git> {
                 }
                 Req::Branches => read::branches(&repo),
                 Req::Stashes => read::stashes(&repo),
-                Req::Diff { seq, target } => Some(Resp::Diff { seq, text: display_diff(&root, &target) }),
-                Req::LogChunk { .. } => None,
+                Req::Diff { seq, target } => Some(Resp::Diff { seq, text: display_diff(&worker_root, &target) }),
+                Req::Write(args) => Some(run_git(&worker_root, &args)),
+                Req::ApplyPatch { patch, reverse } => Some(apply_patch(&worker_root, &patch, reverse)),
+                Req::LogChunk { .. } | Req::LogReset => None,
             };
             if let Some(resp) = resp
                 && event_tx.send(Msg::Git(resp)).is_err()
@@ -115,14 +138,56 @@ pub fn spawn(event_tx: Sender<Msg>) -> anyhow::Result<Git> {
         }
     });
 
-    Ok(Git { tx, log_tx })
+    Ok(Git { tx, log_tx, root, git_dir })
+}
+
+fn run_git(root: &PathBuf, args: &[String]) -> Resp {
+    match Command::new("git").arg("-C").arg(root).args(args).output() {
+        Ok(out) => {
+            let ok = out.status.success();
+            let text = if ok { &out.stdout } else { &out.stderr };
+            let msg = String::from_utf8_lossy(text).lines().next().unwrap_or("done").to_string();
+            Resp::WriteDone { ok, msg: format!("git {}: {msg}", args.first().map(String::as_str).unwrap_or("")) }
+        }
+        Err(e) => Resp::WriteDone { ok: false, msg: e.to_string() },
+    }
+}
+
+fn apply_patch(root: &PathBuf, patch: &str, reverse: bool) -> Resp {
+    let mut args = vec!["apply", "--cached"];
+    if reverse {
+        args.push("-R");
+    }
+    let child = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(&args)
+        .stdin(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn();
+    match child {
+        Ok(mut child) => {
+            let _ = child.stdin.take().unwrap().write_all(patch.as_bytes());
+            match child.wait_with_output() {
+                Ok(out) if out.status.success() => {
+                    let verb = if reverse { "unstaged" } else { "staged" };
+                    Resp::WriteDone { ok: true, msg: format!("hunk {verb}") }
+                }
+                Ok(out) => Resp::WriteDone { ok: false, msg: String::from_utf8_lossy(&out.stderr).trim().to_string() },
+                Err(e) => Resp::WriteDone { ok: false, msg: e.to_string() },
+            }
+        }
+        Err(e) => Resp::WriteDone { ok: false, msg: e.to_string() },
+    }
 }
 
 // ponytail: the display diff uses a subprocess. This is not the hot path.
 // Move it to gix blob diffing if the profile shows a cost.
 fn display_diff(root: &PathBuf, target: &DiffTarget) -> String {
+    // The worktree diff is index-to-worktree. The hunk staging mode applies
+    // these hunks with `apply --cached`, thus the base must be the index.
     let args: Vec<&str> = match target {
-        DiffTarget::WorktreeFile(p) => vec!["diff", "HEAD", "--", p],
+        DiffTarget::WorktreeFile(p) => vec!["diff", "--", p],
         DiffTarget::Commit(id) => vec!["show", "--stat", "--patch", id],
     };
     match Command::new("git").arg("-C").arg(root).args(&args).output() {

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
 
-use super::{CommitEntry, FileEntry, Resp};
+use super::{CommitEntry, FileEntry, LogReq, Resp};
 use crate::event::Msg;
 
 pub fn status(repo: &gix::Repository) -> Option<Resp> {
@@ -103,13 +103,21 @@ pub fn stashes(repo: &gix::Repository) -> Option<Resp> {
 /// This thread owns the ancestor walker for its full life. The walker
 /// borrows the thread-local repository, thus both stay in this stack frame.
 /// Each request pulls the next `count` commits from the walker.
-pub fn log_thread(shared: Arc<gix::ThreadSafeRepository>, rx: Receiver<usize>, ev: Sender<Msg>) {
+pub fn log_thread(shared: Arc<gix::ThreadSafeRepository>, rx: Receiver<LogReq>, ev: Sender<Msg>) {
     let mut repo = shared.to_thread_local();
     // The cache keeps decoded delta bases. Without it, the walk decodes the
     // same base objects again for each commit.
     repo.object_cache_size(Some(16 * 1024 * 1024));
     let mut walk = repo.head_id().ok().and_then(|id| id.ancestors().all().ok());
-    for count in rx {
+    for req in rx {
+        let count = match req {
+            LogReq::Chunk(count) => count,
+            // A reset starts the walk again from the new HEAD.
+            LogReq::Reset => {
+                walk = repo.head_id().ok().and_then(|id| id.ancestors().all().ok());
+                continue;
+            }
+        };
         let mut entries = Vec::with_capacity(count);
         let mut done = walk.is_none();
         if let Some(w) = walk.as_mut() {
