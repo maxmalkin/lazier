@@ -30,7 +30,7 @@ Less is better.
 | | memory | 49 MB | 25 MB | **16 MB** |
 | Linux kernel, 1.3M commits | start | 1963 ms | 732 ms | **1247 ms** |
 | | scroll 300 | 2556 ms | 939 ms | **1232 ms** |
-| | memory | 135 MB | 303 MB | **79 MB** |
+| | memory | 135 MB | 303 MB | **64 MB** |
 | Idle | processor | 0.0 % | 0.9 % | **0.0 %** |
 | Program file | | 17 MB | 9.5 MB | **3.4 MB** |
 
