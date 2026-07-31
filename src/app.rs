@@ -74,6 +74,9 @@ pub enum ConfirmAction {
     Merge(String),
     Revert(String),
     RemoveWorktree(String),
+    /// Run each command in order. Discard and delete need two commands,
+    /// because tracked files and new files need different treatment.
+    RunAll(Vec<Vec<String>>),
 }
 
 pub enum Mode {
@@ -360,6 +363,12 @@ impl App {
                     let Mode::Confirm { action, .. } = std::mem::replace(&mut self.mode, Mode::Normal) else {
                         return;
                     };
+                    if let ConfirmAction::RunAll(cmds) = action {
+                        for cmd in cmds {
+                            self.write(cmd);
+                        }
+                        return;
+                    }
                     let args: Vec<String> = match action {
                         // A plain delete refuses a branch that is not
                         // merged. The force delete does not refuse.
@@ -372,6 +381,7 @@ impl App {
                         ConfirmAction::RemoveWorktree(path) => {
                             svec(&["worktree", "remove", &path])
                         }
+                        ConfirmAction::RunAll(_) => return,
                     };
                     self.write(args);
                 }
@@ -643,6 +653,21 @@ impl App {
         self.selected_row().and_then(|r| r.file).and_then(|i| self.repo.files.get(i))
     }
 
+    /// The path that a file action works on. It gives the pathspec, whether
+    /// git knows the path, and a name to show the user. The root row gives
+    /// the whole work tree.
+    fn file_target(&self) -> Option<(String, bool, String)> {
+        let row = self.selected_row()?;
+        if let Some(dir) = &row.dir {
+            let path = if dir.is_empty() { ".".to_string() } else { dir.clone() };
+            let label = if dir.is_empty() { "the whole work tree".into() } else { format!("{dir}/") };
+            // A directory can hold both kinds of file.
+            return Some((path, false, label));
+        }
+        let f = self.repo.files.get(row.file?)?;
+        Some((f.path.clone(), f.work == '?', f.path.clone()))
+    }
+
     fn rebuild_tree(&mut self) {
         self.tree = tree::build(&self.repo.files, &self.collapsed);
         self.clamp(1);
@@ -752,6 +777,39 @@ impl App {
                     _ => self.message = "no hunks in this file".into(),
                 }
             }
+            // Discard removes work that has no commit. It always asks first.
+            Action::DiscardChanges => {
+                let Some((target, untracked, label)) = self.file_target() else { return };
+                let mut cmds = Vec::new();
+                if !untracked {
+                    cmds.push(svec(&["restore", "--staged", "--worktree", "--", &target]));
+                }
+                // New files have no old state. Only a delete removes them.
+                cmds.push(svec(&["clean", "-fd", "--", &target]));
+                self.mode = Mode::Confirm {
+                    prompt: format!("discard all changes in {label}? this cannot be undone. y/n"),
+                    action: ConfirmAction::RunAll(cmds),
+                };
+            }
+            Action::DeleteFile => {
+                let Some((target, untracked, label)) = self.file_target() else { return };
+                // A delete of the root would remove the whole work tree.
+                if target == "." {
+                    self.message = "select a file or a directory, not the root".into();
+                    self.message_ok = false;
+                    return;
+                }
+                let cmds = if untracked {
+                    vec![svec(&["clean", "-fd", "--", &target])]
+                } else {
+                    vec![svec(&["rm", "-r", "-f", "--", &target])]
+                };
+                self.mode = Mode::Confirm {
+                    prompt: format!("delete {label} from the disk? y/n"),
+                    action: ConfirmAction::RunAll(cmds),
+                };
+            }
+
             Action::TakeOurs | Action::TakeTheirs => {
                 let side = if matches!(action, Action::TakeOurs) { "--ours" } else { "--theirs" };
                 if let Some(f) = self.selected_file()

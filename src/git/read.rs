@@ -65,7 +65,13 @@ fn index_matches_head(repo: &gix::Repository) -> bool {
 }
 
 fn worktree_mark(item: &gix::status::index_worktree::Item) -> char {
+    use gix::status::index_worktree::Item;
     use gix::status::index_worktree::iter::Summary as S;
+    // The dirwalk finds files that git does not track. Their summary says
+    // "added", thus the variant is the only way to know they are new.
+    if matches!(item, Item::DirectoryContents { .. }) {
+        return '?';
+    }
     match item.summary() {
         Some(S::Removed) => 'D',
         Some(S::Added) | Some(S::IntentToAdd) => 'A',

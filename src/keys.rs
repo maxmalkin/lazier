@@ -35,6 +35,8 @@ pub enum Action {
     CommitEditor,
     StashPrompt,
     EnterHunks,
+    DiscardChanges,
+    DeleteFile,
     TakeOurs,
     TakeTheirs,
     // Branches panel
@@ -90,6 +92,8 @@ pub fn action_for(key: KeyEvent, focus: usize) -> Option<Action> {
         (1, KeyCode::Char('C')) => Some(Action::CommitEditor),
         (1, KeyCode::Char('s')) => Some(Action::StashPrompt),
         (1, KeyCode::Enter) => Some(Action::EnterHunks),
+        (1, KeyCode::Char('d')) => Some(Action::DiscardChanges),
+        (1, KeyCode::Char('x')) => Some(Action::DeleteFile),
         (1, KeyCode::Char('o')) => Some(Action::TakeOurs),
         (1, KeyCode::Char('t')) => Some(Action::TakeTheirs),
         (3, KeyCode::Enter) => Some(Action::ZoomGraph),

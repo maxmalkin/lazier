@@ -136,18 +136,30 @@ fn tree_line(app: &App, i: usize) -> Line<'static> {
         );
     }
     let f = &app.repo.files[row.file.unwrap_or(0)];
-    // Green for what is in the index, red for what is not, as lazygit does.
-    let path_color = if f.conflicted() {
-        Color::LightRed
-    } else if f.work == ' ' {
-        Color::Green
+    // The name says the state of the file on its own:
+    //   bold green  the index holds every change
+    //   yellow      part is in the index, part is not
+    //   red         nothing is in the index
+    //   dim red     git does not track the file
+    let name_style = if f.conflicted() {
+        Style::new().fg(Color::LightRed).add_modifier(Modifier::BOLD | Modifier::REVERSED)
+    } else if f.staged() && f.work == ' ' {
+        Style::new().fg(Color::Green).add_modifier(Modifier::BOLD)
+    } else if f.staged() {
+        Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+    } else if f.work == '?' {
+        Style::new().fg(Color::Red).add_modifier(Modifier::DIM)
     } else {
-        Color::Red
+        Style::new().fg(Color::Red)
     };
     Line::from(vec![
-        Span::styled(f.index.to_string(), Style::new().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        // The first column is the index. The second is the work tree.
+        Span::styled(
+            f.index.to_string(),
+            Style::new().fg(Color::Green).add_modifier(Modifier::BOLD),
+        ),
         Span::styled(f.work.to_string(), Style::new().fg(mark_color(f.work))),
-        Span::styled(format!(" {pad}{}", row.name), Style::new().fg(path_color)),
+        Span::styled(format!(" {pad}{}", row.name), name_style),
     ])
 }
 

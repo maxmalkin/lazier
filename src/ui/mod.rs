@@ -141,9 +141,11 @@ const HINTS: [Hints; 6] = [
         ("<space>", "Stage"),
         ("a", "Stage all"),
         ("c", "Commit"),
-        ("C", "Editor"),
+        ("d", "Discard"),
+        ("x", "Delete"),
         ("s", "Stash"),
         ("<enter>", "Hunks"),
+        ("C", "Editor"),
         ("o/t", "Ours/theirs"),
     ],
     &[
@@ -169,20 +171,40 @@ const GLOBAL_HINTS: Hints = &[("?", "Keys"), ("W", "Worktrees"), ("@", "Log"), (
 
 // Make one line of "Desc: key | Desc: key", the shape lazygit uses.
 fn hint_line(groups: &[Hints]) -> Line<'static> {
-    let mut spans = Vec::new();
-    for (gi, group) in groups.iter().enumerate() {
-        for (i, (key, desc)) in group.iter().enumerate() {
-            if gi > 0 || i > 0 {
+    hint_line_width(groups, usize::MAX)
+}
+
+/// The same line, but it stops before it goes past `width`. A hint that
+/// does not fit stays out, thus the bar never runs off the screen.
+fn hint_line_width(groups: &[Hints], width: usize) -> Line<'static> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut used = 0usize;
+    let mut dropped = false;
+    for group in groups {
+        for (key, desc) in group.iter() {
+            let sep = if spans.is_empty() { 0 } else { 3 };
+            let need = sep + desc.len() + 2 + key.len();
+            // Keep one column free for the mark that says "there is more".
+            if used + need > width.saturating_sub(2) {
+                dropped = true;
+                break;
+            }
+            if sep > 0 {
                 spans.push(Span::styled(" | ", DIM));
             }
             spans.push(Span::styled(format!("{desc}: "), DESC));
-            spans.push(Span::styled(*key, KEY));
+            spans.push(Span::styled((*key).to_string(), KEY));
+            used += need;
         }
+    }
+    if dropped {
+        spans.push(Span::styled(" …", DIM));
     }
     Line::from(spans)
 }
 
 fn render_bar(frame: &mut Frame, area: Rect, app: &App) {
+    let w = area.width as usize;
     let line = match &app.mode {
         Mode::Input { prompt, buffer, .. } => Line::from(vec![
             Span::styled(format!("{prompt}: "), Style::new().fg(Color::Cyan)),
@@ -254,7 +276,7 @@ fn render_bar(frame: &mut Frame, area: Rect, app: &App) {
             let color = if app.message_ok { Color::Green } else { Color::Red };
             Line::styled(app.message.clone(), Style::new().fg(color))
         }
-        Mode::Normal => hint_line(&[HINTS[app.focus.min(5)], GLOBAL_HINTS]),
+        Mode::Normal => hint_line_width(&[HINTS[app.focus.min(5)], GLOBAL_HINTS], w),
     };
     frame.render_widget(line, area);
 }
@@ -281,6 +303,8 @@ const HELP: &[(&str, Hints)] = &[
             ("space", "stage or unstage the file or the directory"),
             ("a", "stage all files"),
             ("enter", "open the hunks, or fold the directory"),
+            ("d", "discard the changes (it asks first)"),
+            ("x", "delete it from the disk (it asks first)"),
             ("c / C", "open the commit window, or use the editor"),
             ("s", "put the changes in a stash"),
             ("o / t", "take ours or theirs in a conflict"),
