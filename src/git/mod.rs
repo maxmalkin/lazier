@@ -82,6 +82,8 @@ pub enum Req {
     ReadMessage { id: String, index: usize },
     /// List the worktrees of the repository.
     Worktrees,
+    /// Run a command line through the shell, in the root of the repository.
+    Shell(String),
 }
 
 pub struct WorktreeEntry {
@@ -104,7 +106,9 @@ pub enum Resp {
     /// `text` is the work-tree diff. `staged` is the index diff. A commit
     /// puts everything in `text` and leaves `staged` empty.
     Diff { seq: u64, text: String, staged: String },
-    WriteDone { ok: bool, cmd: String, msg: String, ms: u64 },
+    /// `output` holds the first lines that the command printed. The command
+    /// log shows them.
+    WriteDone { ok: bool, cmd: String, output: Vec<String>, ms: u64 },
     Sync { ahead: u32, behind: u32, unpushed: std::collections::HashSet<String> },
     Message { text: String, index: usize },
     Worktrees(Vec<WorktreeEntry>),
@@ -176,7 +180,23 @@ pub fn spawn(event_tx: Sender<Msg>) -> anyhow::Result<Git> {
                     let (text, staged) = display_diff(&worker_root, &target);
                     Some(Resp::Diff { seq, text, staged })
                 }
+                // A network command can take seconds. Give it its own
+                // thread, thus the other reads do not wait for it.
+                Req::Write(args) if is_network(&args) => {
+                    let (root, ev) = (worker_root.clone(), event_tx.clone());
+                    std::thread::spawn(move || {
+                        let _ = ev.send(Msg::Git(run_git(&root, &args)));
+                    });
+                    None
+                }
                 Req::Write(args) => Some(run_git(&worker_root, &args)),
+                Req::Shell(line) => {
+                    let (root, ev) = (worker_root.clone(), event_tx.clone());
+                    std::thread::spawn(move || {
+                        let _ = ev.send(Msg::Git(run_shell(&root, &line)));
+                    });
+                    None
+                }
                 Req::ApplyPatch { patch, reverse } => Some(apply_patch(&worker_root, &patch, reverse)),
                 Req::Sync => Some(sync_state(&worker_root)),
                 Req::Worktrees => Some(Resp::Worktrees(worktrees(&worker_root))),
@@ -206,21 +226,55 @@ pub fn spawn(event_tx: Sender<Msg>) -> anyhow::Result<Git> {
     Ok(Git { tx, log_tx, root, git_dir })
 }
 
+/// True for a command that talks to a remote. Those commands are slow.
+pub fn is_network(args: &[String]) -> bool {
+    matches!(args.first().map(String::as_str), Some("push" | "pull" | "fetch"))
+}
+
+/// The number of output lines that the command log keeps.
+const LOG_LINES: usize = 6;
+
+fn take_lines(out: &std::process::Output) -> Vec<String> {
+    // Git writes progress to stderr, thus both streams matter.
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    text.lines().filter(|l| !l.trim().is_empty()).take(LOG_LINES).map(str::to_string).collect()
+}
+
 fn run_git(root: &PathBuf, args: &[String]) -> Resp {
     let cmd = format!("git {}", args.join(" "));
     let start = std::time::Instant::now();
-    let result = Command::new("git").arg("-C").arg(root).args(args).output();
+    let result = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        // Never wait for a password. A background command has no terminal
+        // to ask on, thus it must fail instead of hanging.
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .args(args)
+        .output();
     let ms = start.elapsed().as_millis() as u64;
     match result {
-        Ok(out) => {
-            let ok = out.status.success();
-            let text = if ok { &out.stdout } else { &out.stderr };
-            // The log shows the command on its own row, thus the message
-            // needs no command name in front of it.
-            let msg = String::from_utf8_lossy(text).lines().next().unwrap_or("done").to_string();
-            Resp::WriteDone { ok, cmd, msg, ms }
-        }
-        Err(e) => Resp::WriteDone { ok: false, cmd, msg: e.to_string(), ms },
+        Ok(out) => Resp::WriteDone { ok: out.status.success(), cmd, output: take_lines(&out), ms },
+        Err(e) => Resp::WriteDone { ok: false, cmd, output: vec![e.to_string()], ms },
+    }
+}
+
+/// Run a command line through the shell. The user types it after a colon.
+fn run_shell(root: &PathBuf, line: &str) -> Resp {
+    let start = std::time::Instant::now();
+    let result = Command::new("sh").arg("-c").arg(line).current_dir(root).output();
+    let ms = start.elapsed().as_millis() as u64;
+    match result {
+        Ok(out) => Resp::WriteDone {
+            ok: out.status.success(),
+            cmd: format!(": {line}"),
+            output: take_lines(&out),
+            ms,
+        },
+        Err(e) => Resp::WriteDone { ok: false, cmd: format!(": {line}"), output: vec![e.to_string()], ms },
     }
 }
 
@@ -249,15 +303,10 @@ fn apply_patch(root: &PathBuf, patch: &str, reverse: bool) -> Resp {
     match out {
         Ok(out) if out.status.success() => {
             let verb = if reverse { "unstaged" } else { "staged" };
-            Resp::WriteDone { ok: true, cmd, msg: format!("hunk {verb}"), ms }
+            Resp::WriteDone { ok: true, cmd: format!("{cmd} ({verb})"), output: Vec::new(), ms }
         }
-        Ok(out) => Resp::WriteDone {
-            ok: false,
-            cmd,
-            msg: String::from_utf8_lossy(&out.stderr).trim().to_string(),
-            ms,
-        },
-        Err(e) => Resp::WriteDone { ok: false, cmd, msg: e, ms },
+        Ok(out) => Resp::WriteDone { ok: false, cmd, output: take_lines(&out), ms },
+        Err(e) => Resp::WriteDone { ok: false, cmd, output: vec![e], ms },
     }
 }
 

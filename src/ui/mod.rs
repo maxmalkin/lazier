@@ -167,7 +167,8 @@ const HINTS: [Hints; 6] = [
     &[("<enter>", "Apply"), ("p", "Pop"), ("d", "Drop")],
     &[("j/k", "Scroll"), ("g/G", "Top/bottom")],
 ];
-const GLOBAL_HINTS: Hints = &[("?", "Keys"), ("W", "Worktrees"), ("@", "Log"), ("q", "Quit")];
+const GLOBAL_HINTS: Hints =
+    &[("P/p/f", "Push/pull/fetch"), (":", "Shell"), ("?", "Keys"), ("@", "Log"), ("q", "Quit")];
 
 // Make one line of "Desc: key | Desc: key", the shape lazygit uses.
 fn hint_line(groups: &[Hints]) -> Line<'static> {
@@ -275,6 +276,16 @@ fn render_bar(frame: &mut Frame, area: Rect, app: &App) {
         Mode::Normal if !app.message.is_empty() => {
             let color = if app.message_ok { Color::Green } else { Color::Red };
             Line::styled(app.message.clone(), Style::new().fg(color))
+        }
+        // A running network command comes first, thus you always see it.
+        Mode::Normal if !app.running.is_empty() => {
+            let mut spans = vec![Span::styled(
+                format!("⟳ {}  ", app.running.join(", ")),
+                Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            )];
+            let left = w.saturating_sub(spans[0].content.chars().count());
+            spans.extend(hint_line_width(&[GLOBAL_HINTS], left).spans);
+            Line::from(spans)
         }
         Mode::Normal => hint_line_width(&[HINTS[app.focus.min(5)], GLOBAL_HINTS], w),
     };

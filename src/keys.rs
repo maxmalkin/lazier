@@ -48,6 +48,7 @@ pub enum Action {
     Push,
     Pull,
     Fetch,
+    ShellPrompt,
     // Stash panel
     ApplyStash,
     PopStash,
@@ -85,7 +86,23 @@ pub fn action_for(key: KeyEvent, focus: usize) -> Option<Action> {
     if global.is_some() {
         return global;
     }
-    match (focus, key.code) {
+    let panel = panel_action(focus, key.code);
+    if panel.is_some() {
+        return panel;
+    }
+    // These work in every panel. A panel key with the same letter wins,
+    // for example p on the stash panel, which pops a stash.
+    match key.code {
+        KeyCode::Char('P') => Some(Action::Push),
+        KeyCode::Char('p') => Some(Action::Pull),
+        KeyCode::Char('f') => Some(Action::Fetch),
+        KeyCode::Char(':') => Some(Action::ShellPrompt),
+        _ => None,
+    }
+}
+
+fn panel_action(focus: usize, code: KeyCode) -> Option<Action> {
+    match (focus, code) {
         (1, KeyCode::Char(' ')) => Some(Action::ToggleStage),
         (1, KeyCode::Char('a')) => Some(Action::StageAll),
         (1, KeyCode::Char('c')) => Some(Action::CommitPrompt),
@@ -112,9 +129,6 @@ pub fn action_for(key: KeyEvent, focus: usize) -> Option<Action> {
         (2, KeyCode::Char('D')) => Some(Action::DeleteBranch { force: true }),
         (2, KeyCode::Char('R')) => Some(Action::RenameBranchPrompt),
         (2, KeyCode::Char('m')) => Some(Action::MergeBranch),
-        (2, KeyCode::Char('P')) => Some(Action::Push),
-        (2, KeyCode::Char('p')) => Some(Action::Pull),
-        (2, KeyCode::Char('f')) => Some(Action::Fetch),
         (4, KeyCode::Enter | KeyCode::Char('a')) => Some(Action::ApplyStash),
         (4, KeyCode::Char('p')) => Some(Action::PopStash),
         (4, KeyCode::Char('d')) => Some(Action::DropStash),

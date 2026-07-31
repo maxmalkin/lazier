@@ -49,6 +49,8 @@ pub enum InputPurpose {
     StashMsg,
     /// Make a worktree. The text is the path of the new directory.
     AddWorktree,
+    /// Run the text through the shell.
+    Shell,
 }
 
 /// What the commit window does when the user sends it.
@@ -64,8 +66,8 @@ pub struct LogEntry {
     pub ok: bool,
     pub cmd: String,
     pub ms: u64,
-    /// The reason a command failed. The log is the only place that shows it.
-    pub err: Option<String>,
+    /// What the command printed. The log is the only place that shows it.
+    pub output: Vec<String>,
 }
 
 pub enum ConfirmAction {
@@ -120,6 +122,8 @@ pub struct App {
     pub collapsed: HashSet<String>,
     pub cmd_log: Vec<LogEntry>,
     pub show_log: bool,
+    /// The commands that run now. The bar shows them.
+    pub running: Vec<String>,
     pub rebase: Option<RebaseInfo>,
     git: Option<Git>,
     log_inflight: bool,
@@ -149,6 +153,7 @@ impl App {
             collapsed: HashSet::new(),
             cmd_log: Vec::new(),
             show_log: true,
+            running: Vec::new(),
             rebase: None,
             git: None,
             log_inflight: false,
@@ -215,7 +220,7 @@ impl App {
             Err(e) => Some(e.to_string()),
         };
         let ms = start.elapsed().as_millis() as u64;
-        self.log_cmd(ok, format!("git {}", args.join(" ")), ms, err);
+        self.log_cmd(ok, format!("git {}", args.join(" ")), ms, err.into_iter().collect());
         self.refresh_all();
         Ok(())
     }
@@ -445,6 +450,13 @@ impl App {
         if buffer.is_empty() {
             return;
         }
+        if let InputPurpose::Shell = purpose {
+            self.running.push(format!(": {buffer}"));
+            if let Some(git) = &self.git {
+                git.send(Req::Shell(buffer));
+            }
+            return;
+        }
         let args: Vec<String> = match purpose {
             InputPurpose::NewBranch => svec(&["checkout", "-b", &buffer]),
             InputPurpose::RenameBranch(old) => svec(&["branch", "-m", &old, &buffer]),
@@ -455,6 +467,7 @@ impl App {
                 let name = buffer.rsplit('/').next().unwrap_or("work").to_string();
                 svec(&["worktree", "add", "-b", &name, &buffer])
             }
+            InputPurpose::Shell => return,
         };
         self.write(args);
     }
@@ -525,7 +538,7 @@ impl App {
                 self.selected = [0; 6];
                 self.tree.clear();
                 self.refresh_all();
-                self.log_cmd(true, format!("open worktree {path}"), 0, None);
+                self.log_cmd(true, format!("open worktree {path}"), 0, Vec::new());
             }
             Err(e) => {
                 self.message = e.to_string();
@@ -579,6 +592,10 @@ impl App {
     }
 
     fn write(&mut self, args: Vec<String>) {
+        // A slow command shows in the bar until it ends.
+        if git::is_network(&args) {
+            self.running.push(format!("git {}", args.join(" ")));
+        }
         if let Some(git) = &self.git {
             git.send(Req::Write(args));
         }
@@ -626,8 +643,8 @@ impl App {
         self.pending_suspend = Some((args, envs));
     }
 
-    fn log_cmd(&mut self, ok: bool, cmd: String, ms: u64, err: Option<String>) {
-        self.cmd_log.push(LogEntry { ok, cmd, ms, err });
+    fn log_cmd(&mut self, ok: bool, cmd: String, ms: u64, output: Vec<String>) {
+        self.cmd_log.push(LogEntry { ok, cmd, ms, output });
         // Keep the log short. Old entries have no value.
         if self.cmd_log.len() > 100 {
             self.cmd_log.remove(0);
@@ -906,9 +923,17 @@ impl App {
                     };
                 }
             }
-            Action::Push => self.suspend(svec(&["push"])),
-            Action::Pull => self.suspend(svec(&["pull"])),
-            Action::Fetch => self.suspend(svec(&["fetch"])),
+            // These run in the background. The bar says one is running.
+            Action::Push => self.write(svec(&["push"])),
+            Action::Pull => self.write(svec(&["pull"])),
+            Action::Fetch => self.write(svec(&["fetch"])),
+            Action::ShellPrompt => {
+                self.mode = Mode::Input {
+                    prompt: "shell command",
+                    buffer: String::new(),
+                    purpose: InputPurpose::Shell,
+                };
+            }
 
             Action::InteractiveRebase => self.start_rebase(),
             // These three keys work only while a rebase is stopped.
@@ -973,10 +998,13 @@ impl App {
                     self.diff_scroll = 0;
                 }
             }
-            Resp::WriteDone { ok, cmd, msg, ms } => {
-                // The command log holds the result and the reason. The bar
+            Resp::WriteDone { ok, cmd, output, ms } => {
+                // The command log holds the result and the output. The bar
                 // keeps its key hints, thus a command never hides them.
-                self.log_cmd(ok, cmd, ms, (!ok).then_some(msg));
+                if let Some(i) = self.running.iter().position(|c| *c == cmd) {
+                    self.running.remove(i);
+                }
+                self.log_cmd(ok, cmd, ms, output);
                 if ok {
                     self.refresh_all();
                 }
@@ -1232,23 +1260,23 @@ mod tests {
         app.apply_resp(Resp::WriteDone {
             ok: false,
             cmd: "git branch -d old".into(),
-            msg: "error: the branch is not merged".into(),
+            output: vec!["error: the branch is not merged".into()],
             ms: 12,
         });
         assert_eq!(app.cmd_log.len(), 1);
         assert!(!app.cmd_log[0].ok);
         assert_eq!(app.cmd_log[0].ms, 12);
         // The reason lives in the log, not on the bar.
-        assert_eq!(app.cmd_log[0].err.as_deref(), Some("error: the branch is not merged"));
+        assert_eq!(app.cmd_log[0].output, ["error: the branch is not merged"]);
         assert!(app.message.is_empty(), "no command may hide the key hints");
         app.apply_resp(Resp::WriteDone {
             ok: true,
             cmd: "git add -A".into(),
-            msg: "done".into(),
+            output: Vec::new(),
             ms: 3,
         });
         assert!(app.message.is_empty());
-        assert!(app.cmd_log[1].err.is_none());
+        assert!(app.cmd_log[1].output.is_empty());
     }
 
     #[test]
@@ -1299,6 +1327,23 @@ mod tests {
         );
         // With no commit in the list, a bisect cannot start.
         assert_eq!(bisect_command(false, &Action::BisectBad, None), None);
+    }
+
+    // A network command shows in the bar while it runs, then goes away
+    // when the result arrives.
+    #[test]
+    fn a_running_command_shows_and_then_clears() {
+        let mut app = demo();
+        app.apply(Action::Push);
+        assert_eq!(app.running, ["git push"]);
+        app.apply_resp(Resp::WriteDone {
+            ok: true,
+            cmd: "git push".into(),
+            output: vec!["To github.com:max/lazier.git".into()],
+            ms: 900,
+        });
+        assert!(app.running.is_empty());
+        assert_eq!(app.cmd_log[0].output.len(), 1);
     }
 
     #[test]

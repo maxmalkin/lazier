@@ -415,16 +415,22 @@ pub fn render_log(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled(e.cmd.clone(), Style::new().fg(if e.ok { Color::Gray } else { Color::Red })),
             Span::styled(format!("  {}ms", e.ms), Style::new().fg(time_color)),
         ])];
-        if let Some(err) = &e.err {
-            out.push(Line::styled(format!("  {err}"), Style::new().fg(Color::Red)));
+        let color = if e.ok { Color::DarkGray } else { Color::Red };
+        for line in &e.output {
+            out.push(Line::styled(format!("  {line}"), Style::new().fg(color)));
         }
         out
     };
-    // Count from the newest entry back, thus the newest always fits.
+    // Count from the newest entry back. The newest entry always shows,
+    // even when its output alone is taller than the pane.
     let mut lines: Vec<Line> = Vec::new();
     for e in app.cmd_log.iter().rev() {
         let mut r = rows(e);
         if lines.len() + r.len() > take {
+            if lines.is_empty() {
+                r.truncate(take);
+                lines = r;
+            }
             break;
         }
         r.extend(lines);
