@@ -2,7 +2,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::{Block, Paragraph, Wrap};
 
 use super::list;
 use crate::app::{App, PANELS};
@@ -210,10 +210,12 @@ pub fn render_main(frame: &mut Frame, area: Rect, app: &App) {
         _ => ("[0] Diff".into(), app.repo.diff.as_str()),
     };
     let focused = app.focus == 5;
+    // A wrapped line can use more than one row. Take more lines than the
+    // height, then let the widget cut what does not fit.
     let lines: Vec<Line> = text
         .lines()
         .skip(app.diff_scroll as usize)
-        .take(area.height as usize)
+        .take(area.height as usize * 4)
         .map(|l| {
             // File header lines come before the +/- check. A "---" line is
             // a header, not a removal.
@@ -235,6 +237,7 @@ pub fn render_main(frame: &mut Frame, area: Rect, app: &App) {
     let border = if focused { Color::Green } else { Color::DarkGray };
     frame.render_widget(
         Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
             .block(Block::bordered().title(title).border_style(Style::new().fg(border))),
         area,
     );

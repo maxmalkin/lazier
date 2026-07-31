@@ -71,6 +71,8 @@ pub struct App {
     pub message_ok: bool,
     pub zoom: bool,
     pub diff_scroll: u16,
+    /// The number of lines in the diff text. The scroll must not go past it.
+    diff_lines: u16,
     pub tree: Vec<TreeRow>,
     pub collapsed: HashSet<String>,
     pub cmd_log: Vec<(bool, String)>,
@@ -96,6 +98,7 @@ impl App {
             message_ok: true,
             zoom: false,
             diff_scroll: 0,
+            diff_lines: 0,
             tree: Vec::new(),
             collapsed: HashSet::new(),
             cmd_log: Vec::new(),
@@ -395,11 +398,12 @@ impl App {
             Action::PrevPanel => self.focus = (self.focus + 5) % 6,
             Action::FocusPanel(i) => self.focus = i,
             // In the diff pane, the motion keys scroll the text.
-            Action::Down if self.focus == 5 => self.diff_scroll = self.diff_scroll.saturating_add(1),
-            Action::Up if self.focus == 5 => self.diff_scroll = self.diff_scroll.saturating_sub(1),
-            Action::PageDown if self.focus == 5 => self.diff_scroll = self.diff_scroll.saturating_add(15),
-            Action::PageUp if self.focus == 5 => self.diff_scroll = self.diff_scroll.saturating_sub(15),
+            Action::Down if self.focus == 5 => self.scroll_diff(1),
+            Action::Up if self.focus == 5 => self.scroll_diff(-1),
+            Action::PageDown if self.focus == 5 => self.scroll_diff(15),
+            Action::PageUp if self.focus == 5 => self.scroll_diff(-15),
             Action::Top if self.focus == 5 => self.diff_scroll = 0,
+            Action::Bottom if self.focus == 5 => self.diff_scroll = self.diff_lines.saturating_sub(1),
             Action::Down => {
                 let len = self.panel_len(self.focus);
                 let sel = &mut self.selected[self.focus];
@@ -424,9 +428,7 @@ impl App {
             Action::Bottom => {
                 self.selected[self.focus] = self.panel_len(self.focus).saturating_sub(1);
             }
-            Action::DiffScroll(delta) => {
-                self.diff_scroll = self.diff_scroll.saturating_add_signed(delta as i16);
-            }
+            Action::DiffScroll(delta) => self.scroll_diff(delta as i16),
             Action::ZoomGraph => self.zoom = !self.zoom,
             Action::Help => self.mode = Mode::Help,
             Action::ToggleLog => self.show_log = !self.show_log,
@@ -561,6 +563,7 @@ impl App {
             // Ignore a diff for an old selection. Only the last request counts.
             Resp::Diff { seq, text } => {
                 if seq == self.diff_seq {
+                    self.diff_lines = text.lines().count().min(u16::MAX as usize) as u16;
                     self.repo.diff = text;
                     self.diff_scroll = 0;
                 }
@@ -579,6 +582,12 @@ impl App {
                 self.repo.unpushed = unpushed;
             }
         }
+    }
+
+    // Keep at least one line of the diff in view.
+    fn scroll_diff(&mut self, delta: i16) {
+        let last = self.diff_lines.saturating_sub(1);
+        self.diff_scroll = self.diff_scroll.saturating_add_signed(delta).min(last);
     }
 
     fn clamp(&mut self, panel: usize) {

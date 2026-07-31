@@ -4,10 +4,14 @@ mod panels;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 
 use crate::app::{App, Mode};
+
+const KEY: Style = Style::new().fg(Color::Yellow);
+const DESC: Style = Style::new().fg(Color::Gray);
+const DIM: Style = Style::new().fg(Color::DarkGray);
 
 pub fn render(frame: &mut Frame, app: &App) {
     let [body, bar] =
@@ -44,87 +48,186 @@ pub fn render(frame: &mut Frame, app: &App) {
 }
 
 // Key hints for each pane. The bar shows them when there is no message.
-const HINTS: [&str; 6] = [
-    "r refresh",
-    "space stage · a all · c commit · C editor · s stash · enter hunks/fold · o/t conflict",
-    "enter checkout · n new · d delete · P push · p pull · f fetch",
-    "enter zoom · i rebase · g/G top/bottom · ctrl-d/u page",
-    "enter/a apply · p pop · d drop",
-    "j/k scroll · g top",
+type Hints = &'static [(&'static str, &'static str)];
+const HINTS: [Hints; 6] = [
+    &[("r", "refresh")],
+    &[
+        ("space", "stage"),
+        ("a", "all"),
+        ("c", "commit"),
+        ("C", "editor"),
+        ("s", "stash"),
+        ("enter", "hunks/fold"),
+        ("o/t", "ours/theirs"),
+    ],
+    &[
+        ("enter", "checkout"),
+        ("n", "new"),
+        ("d", "delete"),
+        ("P", "push"),
+        ("p", "pull"),
+        ("f", "fetch"),
+    ],
+    &[("enter", "zoom"), ("i", "rebase"), ("g/G", "top/bottom"), ("ctrl-d/u", "page")],
+    &[("enter/a", "apply"), ("p", "pop"), ("d", "drop")],
+    &[("j/k", "scroll"), ("g/G", "top/bottom")],
 ];
+const GLOBAL_HINTS: Hints = &[("?", "help"), ("@", "log"), ("q", "quit")];
+
+// Make one line of "key desc · key desc" with the keys in a bright color.
+fn hint_line(groups: &[Hints]) -> Line<'static> {
+    let mut spans = Vec::new();
+    for (gi, group) in groups.iter().enumerate() {
+        for (i, (key, desc)) in group.iter().enumerate() {
+            if gi > 0 || i > 0 {
+                spans.push(Span::styled(" · ", DIM));
+            }
+            spans.push(Span::styled(*key, KEY));
+            spans.push(Span::styled(format!(" {desc}"), DESC));
+        }
+    }
+    Line::from(spans)
+}
 
 fn render_bar(frame: &mut Frame, area: Rect, app: &App) {
     let line = match &app.mode {
-        Mode::Input { prompt, buffer, .. } => {
-            Line::styled(format!("{prompt}: {buffer}▏"), Style::new().fg(Color::Cyan))
-        }
+        Mode::Input { prompt, buffer, .. } => Line::from(vec![
+            Span::styled(format!("{prompt}: "), Style::new().fg(Color::Cyan)),
+            Span::styled(format!("{buffer}▏"), Style::new().fg(Color::White)),
+        ]),
         Mode::Confirm { prompt, .. } => Line::styled(prompt.clone(), Style::new().fg(Color::Yellow)),
-        Mode::Hunks { cursor, hunks, .. } => Line::styled(
-            format!("hunk {}/{} — space: stage, j/k: move, esc: back", cursor + 1, hunks.len()),
-            Style::new().fg(Color::Magenta),
-        ),
+        Mode::Hunks { cursor, hunks, .. } => {
+            let mut spans = vec![Span::styled(
+                format!("hunk {}/{}  ", cursor + 1, hunks.len()),
+                Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+            )];
+            spans.extend(
+                hint_line(&[&[("space", "stage"), ("j/k", "move"), ("esc", "back")]]).spans,
+            );
+            Line::from(spans)
+        }
+        Mode::Rebase { .. } => hint_line(&[&[
+            ("p", "pick"),
+            ("r", "reword"),
+            ("e", "edit"),
+            ("s", "squash"),
+            ("f", "fixup"),
+            ("d", "drop"),
+            ("J/K", "move"),
+            ("enter", "run"),
+            ("esc", "cancel"),
+        ]]),
         Mode::Help => Line::styled("press any key to close the help", Style::new().fg(Color::Cyan)),
-        Mode::Rebase { .. } => Line::styled(
-            "p pick · r reword · e edit · s squash · f fixup · d drop · J/K move · enter run · esc cancel",
-            Style::new().fg(Color::Magenta),
-        ),
         // A stopped rebase takes over three keys.
         Mode::Normal if app.rebase.is_some() => {
             let r = app.rebase.as_ref().unwrap();
-            Line::styled(
-                format!("REBASE {}/{} — c continue · s skip · A abort", r.step, r.total),
+            let mut spans = vec![Span::styled(
+                format!("REBASE {}/{}  ", r.step, r.total),
                 Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-            )
+            )];
+            spans.extend(
+                hint_line(&[&[("c", "continue"), ("s", "skip"), ("A", "abort")]]).spans,
+            );
+            Line::from(spans)
         }
         // A failed command shows its message in red.
         Mode::Normal if !app.message.is_empty() => {
             let color = if app.message_ok { Color::Green } else { Color::Red };
             Line::styled(app.message.clone(), Style::new().fg(color))
         }
-        Mode::Normal => Line::styled(
-            format!("{} · ? help · @ log · q quit", HINTS[app.focus.min(5)]),
-            Style::new().fg(Color::DarkGray),
-        ),
+        Mode::Normal => hint_line(&[HINTS[app.focus.min(5)], GLOBAL_HINTS]),
     };
     frame.render_widget(line, area);
 }
 
-const HELP: &str = "\
- Global      tab/shift-tab cycle panes    1-5 panes  0 diff pane
-             j/k move      ctrl-d/u page  g/G top/bottom
-             J/K scroll diff              r refresh
-             ? this help   @ command log  q quit
-
- Files [2]   space stage/unstage  a stage all  enter hunks or fold dir
-             c commit  C commit in editor  s stash  o/t take ours/theirs
-
- Branches[3] enter checkout  n new branch  d delete
-             P push  p pull  f fetch  (these use the real terminal)
-
- Commits [4] enter zoomed graph view  i interactive rebase from here
-             ↑ marks unpushed commits
-
- Rebase      p pick  r reword  e edit  s squash  f fixup  d drop
-             J/K move a commit  enter run  esc cancel
-             while stopped: c continue  s skip  A abort
-
- Stash [5]   enter/a apply  p pop  d drop
-
- Hunk mode   space stage hunk  j/k move  esc back";
+// Each section has a title and its key rows.
+const HELP: &[(&str, Hints)] = &[
+    (
+        "Global",
+        &[
+            ("tab / shift-tab", "cycle the panes"),
+            ("1 2 3 4 5", "go to a panel"),
+            ("0", "go to the diff pane"),
+            ("j / k", "move the selection"),
+            ("ctrl-d / ctrl-u", "move one page"),
+            ("g / G", "go to the top or the end"),
+            ("J / K", "scroll the diff pane"),
+            ("r", "read the repository again"),
+            ("? / @ / q", "help, command log, quit"),
+        ],
+    ),
+    (
+        "Files [2]",
+        &[
+            ("space", "stage or unstage the file or the directory"),
+            ("a", "stage all files"),
+            ("enter", "open the hunks, or fold the directory"),
+            ("c / C", "commit here, or commit in the editor"),
+            ("s", "put the changes in a stash"),
+            ("o / t", "take ours or theirs in a conflict"),
+        ],
+    ),
+    (
+        "Branches [3]",
+        &[
+            ("enter", "check out the branch"),
+            ("n / d", "make a new branch, or delete this one"),
+            ("P / p / f", "push, pull, or fetch"),
+        ],
+    ),
+    (
+        "Commits [4]",
+        &[
+            ("enter", "open the full graph view"),
+            ("i", "start an interactive rebase here"),
+            ("↑", "this commit is not on the upstream branch"),
+        ],
+    ),
+    ("Stash [5]", &[("enter / a", "apply the stash"), ("p", "pop it"), ("d", "drop it")]),
+    (
+        "Rebase",
+        &[
+            ("p r e s f d", "pick, reword, edit, squash, fixup, drop"),
+            ("J / K", "move the commit in the list"),
+            ("enter / esc", "run the rebase, or cancel it"),
+            ("c / s / A", "while stopped: continue, skip, abort"),
+        ],
+    ),
+];
 
 fn render_help(frame: &mut Frame, body: Rect) {
-    let w = 76.min(body.width);
-    let h = 20.min(body.height);
+    let w = 64.min(body.width);
+    let inner = w.saturating_sub(2) as usize;
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, (title, rows)) in HELP.iter().enumerate() {
+        if i > 0 {
+            lines.push(Line::styled("─".repeat(inner), DIM));
+        }
+        lines.push(Line::styled(
+            format!(" {title}"),
+            Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ));
+        for (key, desc) in rows.iter() {
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {key:>15}  "), KEY),
+                Span::styled(*desc, DESC),
+            ]));
+        }
+    }
+    let h = (lines.len() as u16 + 2).min(body.height);
     let area = Rect {
-        x: body.x + (body.width - w) / 2,
-        y: body.y + (body.height - h) / 2,
+        x: body.x + (body.width.saturating_sub(w)) / 2,
+        y: body.y + (body.height.saturating_sub(h)) / 2,
         width: w,
         height: h,
     };
     frame.render_widget(Clear, area);
     frame.render_widget(
-        Paragraph::new(HELP)
-            .block(Block::bordered().title("Help").border_style(Style::new().fg(Color::Cyan))),
+        Paragraph::new(lines).block(
+            Block::bordered()
+                .title(Span::styled(" Keys ", Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)))
+                .border_style(Style::new().fg(Color::Cyan)),
+        ),
         area,
     );
 }
