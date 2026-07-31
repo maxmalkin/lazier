@@ -57,6 +57,8 @@ pub struct LogEntry {
     pub ok: bool,
     pub cmd: String,
     pub ms: u64,
+    /// The reason a command failed. The log is the only place that shows it.
+    pub err: Option<String>,
 }
 
 pub enum ConfirmAction {
@@ -179,14 +181,14 @@ impl App {
         execute!(std::io::stdout(), EnterAlternateScreen)?;
         terminal.clear()?;
         self.pause.store(false, Ordering::Relaxed);
-        self.message_ok = matches!(&status, Ok(s) if s.success());
-        self.message = match status {
-            Ok(s) if s.success() => String::new(),
-            Ok(s) => format!("git {} failed ({s})", args.join(" ")),
-            Err(e) => e.to_string(),
+        let ok = matches!(&status, Ok(s) if s.success());
+        let err = match status {
+            Ok(s) if s.success() => None,
+            Ok(s) => Some(s.to_string()),
+            Err(e) => Some(e.to_string()),
         };
-        let (ok, ms) = (self.message_ok, start.elapsed().as_millis() as u64);
-        self.log_cmd(ok, format!("git {}", args.join(" ")), ms);
+        let ms = start.elapsed().as_millis() as u64;
+        self.log_cmd(ok, format!("git {}", args.join(" ")), ms, err);
         self.refresh_all();
         Ok(())
     }
@@ -475,8 +477,8 @@ impl App {
         self.pending_suspend = Some((args, envs));
     }
 
-    fn log_cmd(&mut self, ok: bool, cmd: String, ms: u64) {
-        self.cmd_log.push(LogEntry { ok, cmd, ms });
+    fn log_cmd(&mut self, ok: bool, cmd: String, ms: u64, err: Option<String>) {
+        self.cmd_log.push(LogEntry { ok, cmd, ms, err });
         // Keep the log short. Old entries have no value.
         if self.cmd_log.len() > 100 {
             self.cmd_log.remove(0);
@@ -739,11 +741,9 @@ impl App {
                 }
             }
             Resp::WriteDone { ok, cmd, msg, ms } => {
-                // A command that worked belongs in the log only. The bar
-                // keeps its key hints. A failure needs the user to see it.
-                self.message = if ok { String::new() } else { msg };
-                self.message_ok = ok;
-                self.log_cmd(ok, cmd, ms);
+                // The command log holds the result and the reason. The bar
+                // keeps its key hints, thus a command never hides them.
+                self.log_cmd(ok, cmd, ms, (!ok).then_some(msg));
                 if ok {
                     self.refresh_all();
                 }
@@ -985,8 +985,9 @@ mod tests {
         assert_eq!(app.cmd_log.len(), 1);
         assert!(!app.cmd_log[0].ok);
         assert_eq!(app.cmd_log[0].ms, 12);
-        // A failure stays on the bar. A success does not.
-        assert!(!app.message.is_empty());
+        // The reason lives in the log, not on the bar.
+        assert_eq!(app.cmd_log[0].err.as_deref(), Some("error: the branch is not merged"));
+        assert!(app.message.is_empty(), "no command may hide the key hints");
         app.apply_resp(Resp::WriteDone {
             ok: true,
             cmd: "git add -A".into(),
@@ -994,6 +995,7 @@ mod tests {
             ms: 3,
         });
         assert!(app.message.is_empty());
+        assert!(app.cmd_log[1].err.is_none());
     }
 
     #[test]

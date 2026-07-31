@@ -264,21 +264,31 @@ pub fn render_main(frame: &mut Frame, area: Rect, app: &App) {
 /// each one took.
 pub fn render_log(frame: &mut Frame, area: Rect, app: &App) {
     let take = area.height.saturating_sub(2) as usize;
-    let start = app.cmd_log.len().saturating_sub(take);
-    let lines: Vec<Line> = app.cmd_log[start..]
-        .iter()
-        .map(|e| {
-            let (icon, color) =
-                if e.ok { ("✓", Color::Green) } else { ("✗", Color::Red) };
-            // A slow command gets a warm color, thus it is easy to see.
-            let time_color = if e.ms >= 500 { Color::Yellow } else { Color::DarkGray };
-            Line::from(vec![
-                Span::styled(format!("{icon} "), Style::new().fg(color)),
-                Span::styled(e.cmd.clone(), Style::new().fg(Color::Gray)),
-                Span::styled(format!("  {}ms", e.ms), Style::new().fg(time_color)),
-            ])
-        })
-        .collect();
+    // A failed command needs two rows: the command and the reason.
+    let rows = |e: &crate::app::LogEntry| {
+        let (icon, color) = if e.ok { ("✓", Color::Green) } else { ("✗", Color::Red) };
+        // A slow command gets a warm color, thus it is easy to see.
+        let time_color = if e.ms >= 500 { Color::Yellow } else { Color::DarkGray };
+        let mut out = vec![Line::from(vec![
+            Span::styled(format!("{icon} "), Style::new().fg(color)),
+            Span::styled(e.cmd.clone(), Style::new().fg(if e.ok { Color::Gray } else { Color::Red })),
+            Span::styled(format!("  {}ms", e.ms), Style::new().fg(time_color)),
+        ])];
+        if let Some(err) = &e.err {
+            out.push(Line::styled(format!("  {err}"), Style::new().fg(Color::Red)));
+        }
+        out
+    };
+    // Count from the newest entry back, thus the newest always fits.
+    let mut lines: Vec<Line> = Vec::new();
+    for e in app.cmd_log.iter().rev() {
+        let mut r = rows(e);
+        if lines.len() + r.len() > take {
+            break;
+        }
+        r.extend(lines);
+        lines = r;
+    }
     frame.render_widget(
         Paragraph::new(lines)
             .block(Block::bordered().title("[@] Command log").border_style(Style::new().fg(Color::DarkGray))),

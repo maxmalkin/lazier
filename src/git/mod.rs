@@ -186,9 +186,10 @@ fn run_git(root: &PathBuf, args: &[String]) -> Resp {
         Ok(out) => {
             let ok = out.status.success();
             let text = if ok { &out.stdout } else { &out.stderr };
+            // The log shows the command on its own row, thus the message
+            // needs no command name in front of it.
             let msg = String::from_utf8_lossy(text).lines().next().unwrap_or("done").to_string();
-            let verb = args.first().map(String::as_str).unwrap_or("");
-            Resp::WriteDone { ok, cmd, msg: format!("git {verb}: {msg}"), ms }
+            Resp::WriteDone { ok, cmd, msg, ms }
         }
         Err(e) => Resp::WriteDone { ok: false, cmd, msg: e.to_string(), ms },
     }
