@@ -1,4 +1,4 @@
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 pub enum Action {
     Quit,
@@ -7,7 +7,13 @@ pub enum Action {
     FocusPanel(usize),
     Up,
     Down,
+    PageUp,
+    PageDown,
+    Top,
+    Bottom,
+    DiffScroll(i32),
     Refresh,
+    ZoomGraph,
     // Files panel
     ToggleStage,
     StageAll,
@@ -33,13 +39,23 @@ pub enum Action {
 /// Map a key to an action. Global keys come first. Panel keys depend on the
 /// panel in focus.
 pub fn action_for(key: KeyEvent, focus: usize) -> Option<Action> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let global = match key.code {
+        KeyCode::Char('d') if ctrl => Some(Action::PageDown),
+        KeyCode::Char('u') if ctrl => Some(Action::PageUp),
         KeyCode::Char('q') => Some(Action::Quit),
         KeyCode::Tab => Some(Action::NextPanel),
         KeyCode::BackTab => Some(Action::PrevPanel),
         KeyCode::Char(c @ '1'..='5') => Some(Action::FocusPanel(c as usize - '1' as usize)),
         KeyCode::Char('j') | KeyCode::Down => Some(Action::Down),
         KeyCode::Char('k') | KeyCode::Up => Some(Action::Up),
+        KeyCode::PageDown => Some(Action::PageDown),
+        KeyCode::PageUp => Some(Action::PageUp),
+        KeyCode::Char('g') => Some(Action::Top),
+        KeyCode::Char('G') => Some(Action::Bottom),
+        // Shift J and K scroll the diff pane.
+        KeyCode::Char('J') => Some(Action::DiffScroll(3)),
+        KeyCode::Char('K') => Some(Action::DiffScroll(-3)),
         KeyCode::Char('r') => Some(Action::Refresh),
         _ => None,
     };
@@ -55,6 +71,7 @@ pub fn action_for(key: KeyEvent, focus: usize) -> Option<Action> {
         (1, KeyCode::Enter) => Some(Action::EnterHunks),
         (1, KeyCode::Char('o')) => Some(Action::TakeOurs),
         (1, KeyCode::Char('t')) => Some(Action::TakeTheirs),
+        (3, KeyCode::Enter) => Some(Action::ZoomGraph),
         (2, KeyCode::Enter) => Some(Action::Checkout),
         (2, KeyCode::Char('n')) => Some(Action::NewBranchPrompt),
         (2, KeyCode::Char('d')) => Some(Action::DeleteBranch),

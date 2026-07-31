@@ -11,6 +11,12 @@ use crate::app::{App, Mode};
 pub fn render(frame: &mut Frame, app: &App) {
     let [body, bar] =
         Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(frame.area());
+    // The zoomed graph view takes the whole body.
+    if app.zoom {
+        panels::render_zoom(frame, body, app);
+        render_bar(frame, bar, app);
+        return;
+    }
     let [left, main] =
         Layout::horizontal([Constraint::Percentage(35), Constraint::Percentage(65)]).areas(body);
     let areas: [Rect; 5] = Layout::vertical([

@@ -55,6 +55,8 @@ pub struct App {
     pub repo: RepoState,
     pub mode: Mode,
     pub message: String,
+    pub zoom: bool,
+    pub diff_scroll: u16,
     git: Option<Git>,
     log_inflight: bool,
     diff_seq: u64,
@@ -72,6 +74,8 @@ impl App {
             repo: RepoState::default(),
             mode: Mode::Normal,
             message: String::new(),
+            zoom: false,
+            diff_scroll: 0,
             git: None,
             log_inflight: false,
             diff_seq: 0,
@@ -242,6 +246,25 @@ impl App {
                 let sel = &mut self.selected[self.focus];
                 *sel = sel.saturating_sub(1);
             }
+            // ponytail: the page step is a constant. The exact panel height
+            // is not worth the plumbing.
+            Action::PageDown => {
+                let len = self.panel_len(self.focus);
+                let sel = &mut self.selected[self.focus];
+                *sel = (*sel + 15).min(len.saturating_sub(1));
+            }
+            Action::PageUp => {
+                let sel = &mut self.selected[self.focus];
+                *sel = sel.saturating_sub(15);
+            }
+            Action::Top => self.selected[self.focus] = 0,
+            Action::Bottom => {
+                self.selected[self.focus] = self.panel_len(self.focus).saturating_sub(1);
+            }
+            Action::DiffScroll(delta) => {
+                self.diff_scroll = self.diff_scroll.saturating_add_signed(delta as i16);
+            }
+            Action::ZoomGraph => self.zoom = !self.zoom,
             Action::Refresh => self.refresh_all(),
 
             Action::ToggleStage => {
@@ -357,6 +380,7 @@ impl App {
             Resp::Diff { seq, text } => {
                 if seq == self.diff_seq {
                     self.repo.diff = text;
+                    self.diff_scroll = 0;
                 }
             }
             Resp::WriteDone { ok, msg } => {
@@ -440,7 +464,14 @@ mod tests {
             .map(|i| {
                 let mut id = [b'0'; 7];
                 id.copy_from_slice(format!("{:07x}", 0xa0c000 + i).as_bytes());
-                CommitEntry { id, subject: format!("fake: commit subject #{i}").into() }
+                let graph = ["●", "◉─╮", "● │", "│ ●", "●─╯"][i % 5];
+                CommitEntry {
+                    id,
+                    graph: graph.into(),
+                    subject: format!("fake: commit subject #{i}").into(),
+                    author: "Test Author".into(),
+                    time: 1_753_000_000 + i as u32,
+                }
             })
             .collect();
         app.repo.diff = "diff --git a/src/main.rs b/src/main.rs\n+added line\n-removed line".into();
@@ -470,6 +501,14 @@ mod tests {
         let mut app = demo();
         app.focus = 3;
         app.selected[3] = 99_999;
+        insta::assert_snapshot!(draw(&app, 80, 24).backend());
+    }
+
+    #[test]
+    fn zoomed_graph() {
+        let mut app = demo();
+        app.focus = 3;
+        app.zoom = true;
         insta::assert_snapshot!(draw(&app, 80, 24).backend());
     }
 
