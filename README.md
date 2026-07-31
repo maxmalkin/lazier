@@ -24,19 +24,22 @@ with less memory and less processor time.
 
 Less is better.
 
-| Test | | lazygit | gitui | lazier |
-|------|---|--------:|------:|-------:|
-| 10 000 changed files | processor | 721 ms | 150 ms | **163 ms** |
-| | memory | 49 MB | 25 MB | **16 MB** |
-| Linux kernel, 1.3M commits | start | 1963 ms | 732 ms | **1247 ms** |
-| | scroll 300 | 2556 ms | 939 ms | **1232 ms** |
-| | memory | 135 MB | 303 MB | **64 MB** |
-| Idle | processor | 0.0 % | 0.9 % | **0.0 %** |
-| Program file | | 17 MB | 9.5 MB | **3.4 MB** |
+| Test | | lazygit | lazier | |
+|------|---|--------:|-------:|----:|
+| 10 000 changed files | processor | 721 ms | **163 ms** | **~4.4x** |
+| | peak RSS | 49 MB | **16 MB** | **~3x** |
+| Linux kernel, 1.3M commits | start | 1963 ms | **1247 ms** | **~1.6x** |
+| | scroll 300 commits | 2556 ms | **1232 ms** | **~2x** |
+| | scroll 2000 commits | 2264 ms | **1316 ms** | **~1.7x** |
+| | peak RSS | 135 MB | **64 MB** | **~2.1x** |
+| Refresh 12 times, 10 000 files | processor | 4003 ms | **176 ms** | **~23x** |
+| Walk 300 files with diffs | processor | 1106 ms | **169 ms** | **~6.5x** |
+| Idle | processor | 0.2 % | **0.0 %** | — |
+| Program file | | 17 MB | **3.4 MB** | **~5x** |
 
-lazier uses the least memory in each test. gitui starts more quickly on the
-kernel repository, but it needs 3.8 times more memory: it reads the whole
-object database, and lazier reads only the parts it must show.
+The last column is how many times better lazier is. Peak RSS is the most
+memory the program held. lazier uses less in every test, and it uses no
+processor time when you touch no key.
 
 **Why it is fast.** lazygit starts a `git` process for each read and parses
 the text. lazier reads the repository in its own process with gitoxide.
