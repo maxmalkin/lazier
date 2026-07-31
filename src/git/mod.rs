@@ -3,6 +3,7 @@
 pub mod graph;
 pub mod patch;
 mod read;
+pub mod rebase;
 pub mod watch;
 
 use std::io::Write as _;
