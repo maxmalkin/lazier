@@ -53,11 +53,15 @@ cargo install --git https://github.com/maxmalkin/lazier
 ```
 
 Or take an archive for your platform from the
-[releases page](https://github.com/maxmalkin/lazier/releases), then:
+[releases page](https://github.com/maxmalkin/lazier/releases). macOS and
+Linux:
 
 ```sh
 tar -xzf lazier-<target>.tar.gz && sudo mv lazier /usr/local/bin/
 ```
+
+Windows: unzip `lazier-x86_64-pc-windows-msvc.zip`, then put `lazier.exe` in
+a directory on your `PATH`.
 
 ## Use
 

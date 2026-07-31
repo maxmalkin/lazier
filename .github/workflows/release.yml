@@ -26,6 +26,11 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          # Intel Windows runners can build the ARM program.
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -34,13 +39,21 @@ jobs:
           targets: ${{ matrix.target }}
       - run: cargo build --release --locked --target ${{ matrix.target }}
       - name: Make the archive
+        if: runner.os != 'Windows'
         run: |
           tar -czf lazier-${{ matrix.target }}.tar.gz \
             -C target/${{ matrix.target }}/release lazier
+      # Windows users expect a zip file.
+      - name: Make the archive for Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path target/${{ matrix.target }}/release/lazier.exe `
+            -DestinationPath lazier-${{ matrix.target }}.zip
       - uses: actions/upload-artifact@v4
         with:
           name: lazier-${{ matrix.target }}
-          path: lazier-${{ matrix.target }}.tar.gz
+          path: lazier-${{ matrix.target }}.*
 
   release:
     needs: build
@@ -51,5 +64,7 @@ jobs:
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
-          files: "*.tar.gz"
+          files: |
+            *.tar.gz
+            *.zip
           generate_release_notes: true

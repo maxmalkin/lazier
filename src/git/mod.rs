@@ -278,7 +278,9 @@ fn run_git(root: &PathBuf, args: &[String]) -> Resp {
 /// Run a command line through the shell. The user types it after a colon.
 fn run_shell(root: &PathBuf, line: &str) -> Resp {
     let start = std::time::Instant::now();
-    let result = Command::new("sh").arg("-c").arg(line).current_dir(root).output();
+    // Each system has its own shell and its own flag for a command line.
+    let (program, flag) = if cfg!(windows) { ("cmd", "/C") } else { ("sh", "-c") };
+    let result = Command::new(program).arg(flag).arg(line).current_dir(root).output();
     let ms = start.elapsed().as_millis() as u64;
     match result {
         Ok(out) => Resp::WriteDone {
