@@ -45,6 +45,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     render_bar(frame, bar, app);
     match &app.mode {
         Mode::Help => render_help(frame, body),
+        Mode::Confirm { prompt, .. } => render_confirm(frame, body, prompt),
         Mode::Worktrees { list, cursor } => {
             let h = (list.len() as u16 + 2).max(4);
             panels::render_worktrees(frame, centered(body, 78, h), list, *cursor);
@@ -66,6 +67,37 @@ fn centered(area: Rect, w: u16, h: u16) -> Rect {
         width: w,
         height: h,
     }
+}
+
+/// The window that asks the user to say yes or no. A long path wraps, thus
+/// the window grows to hold it.
+fn render_confirm(frame: &mut Frame, body: Rect, prompt: &str) {
+    let w = 60.min(body.width);
+    let inner = w.saturating_sub(4).max(1) as usize;
+    let text_rows = prompt.chars().count().div_ceil(inner).max(1) as u16;
+    let area = centered(body, w, text_rows + 4);
+    frame.render_widget(Clear, area);
+    let block = Block::bordered()
+        .title(Span::styled(
+            " Confirm ",
+            Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ))
+        .border_style(Style::new().fg(Color::Yellow));
+    let text = block.inner(area);
+    frame.render_widget(block, area);
+
+    let [msg, hint] =
+        Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(text);
+    frame.render_widget(
+        Paragraph::new(prompt.to_string())
+            .wrap(Wrap { trim: false })
+            .style(Style::new().fg(Color::White)),
+        Rect { x: msg.x + 1, width: msg.width.saturating_sub(2), ..msg },
+    );
+    frame.render_widget(
+        hint_line(&[&[("y", "Yes"), ("n / esc", "No")]]),
+        Rect { x: hint.x + 1, width: hint.width.saturating_sub(2), ..hint },
+    );
 }
 
 /// The commit message window. The summary line is on top. The body is
@@ -211,7 +243,8 @@ fn render_bar(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled(format!("{prompt}: "), Style::new().fg(Color::Cyan)),
             Span::styled(format!("{buffer}▏"), Style::new().fg(Color::White)),
         ]),
-        Mode::Confirm { prompt, .. } => Line::styled(prompt.clone(), Style::new().fg(Color::Yellow)),
+        // The confirm window draws its own text and keys.
+        Mode::Confirm { .. } => Line::default(),
         Mode::Hunks { picked, .. } => {
             let mut spans = vec![Span::styled(
                 format!("{} marked  ", picked.len()),

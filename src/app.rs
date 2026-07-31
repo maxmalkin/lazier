@@ -281,7 +281,7 @@ impl App {
                     }
                     let path = w.path.clone();
                     self.mode = Mode::Confirm {
-                        prompt: format!("remove the worktree {path}? y/n"),
+                        prompt: format!("remove the worktree {path}?"),
                         action: ConfirmAction::RemoveWorktree(path),
                     };
                 }
@@ -810,7 +810,7 @@ impl App {
                 // New files have no old state. Only a delete removes them.
                 cmds.push(svec(&["clean", "-fd", "--", &target]));
                 self.mode = Mode::Confirm {
-                    prompt: format!("discard all changes in {label}? this cannot be undone. y/n"),
+                    prompt: format!("discard all changes in {label}? this cannot be undone."),
                     action: ConfirmAction::RunAll(cmds),
                 };
             }
@@ -828,7 +828,7 @@ impl App {
                     vec![svec(&["rm", "-r", "-f", "--", &target])]
                 };
                 self.mode = Mode::Confirm {
-                    prompt: format!("delete {label} from the disk? y/n"),
+                    prompt: format!("delete {label} from the disk?"),
                     action: ConfirmAction::RunAll(cmds),
                 };
             }
@@ -862,7 +862,7 @@ impl App {
                 }
                 let word = if force { "force delete" } else { "delete" };
                 self.mode = Mode::Confirm {
-                    prompt: format!("{word} branch {}? y/n", b.name),
+                    prompt: format!("{word} branch {}?", b.name),
                     action: ConfirmAction::DeleteBranch { name: b.name.clone(), force },
                 };
             }
@@ -885,7 +885,7 @@ impl App {
                 let name = b.name.clone();
                 let head = self.repo.head.clone().unwrap_or_else(|| "HEAD".into());
                 self.mode = Mode::Confirm {
-                    prompt: format!("merge {name} into {head}? y/n"),
+                    prompt: format!("merge {name} into {head}?"),
                     action: ConfirmAction::Merge(name),
                 };
             }
@@ -924,7 +924,7 @@ impl App {
                     let id = c.id_str().to_string();
                     let subject = c.subject.to_string();
                     self.mode = Mode::Confirm {
-                        prompt: format!("revert {id} \"{subject}\"? y/n"),
+                        prompt: format!("revert {id} \"{subject}\"?"),
                         action: ConfirmAction::Revert(id),
                     };
                 }
@@ -963,7 +963,7 @@ impl App {
                 let i = self.selected[4];
                 if i < self.repo.stashes.len() {
                     self.mode = Mode::Confirm {
-                        prompt: format!("drop stash@{{{i}}}? y/n"),
+                        prompt: format!("drop stash@{{{i}}}?"),
                         action: ConfirmAction::DropStash(i),
                     };
                 }
@@ -1023,7 +1023,7 @@ impl App {
                     && let Some(path) = worktree_in_use(&output)
                 {
                     self.mode = Mode::Confirm {
-                        prompt: format!("that branch is checked out at {path}. go there? y/n"),
+                        prompt: format!("that branch is checked out at {path}. go there?"),
                         action: ConfirmAction::GoToWorktree(path),
                     };
                 }
@@ -1398,6 +1398,17 @@ mod tests {
             }
             _ => panic!("expected the offer to go to the worktree"),
         }
+    }
+
+    #[test]
+    fn confirm_window() {
+        let mut app = demo();
+        app.mode = Mode::Confirm {
+            prompt: "that branch is checked out at /Users/max/dbt/fs-warehouses. go there?"
+                .into(),
+            action: ConfirmAction::GoToWorktree("/Users/max/dbt/fs-warehouses".into()),
+        };
+        insta::assert_snapshot!(draw(&app, 100, 30).backend());
     }
 
     #[test]
