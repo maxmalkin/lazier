@@ -122,6 +122,9 @@ pub fn log_thread(shared: Arc<gix::ThreadSafeRepository>, rx: Receiver<LogReq>, 
     let mut head = repo.head_id().ok().map(|id| id.detach());
     let mut walk = start_walk(&repo);
     let mut graph: super::graph::Graph<gix::ObjectId> = super::graph::Graph::new();
+    // False until the first chunk goes out. The first refresh must fill the
+    // panel, even though HEAD has not moved since the thread started.
+    let mut sent_any = false;
     for req in rx {
         let mut replace = false;
         let count = match req {
@@ -130,16 +133,19 @@ pub fn log_thread(shared: Arc<gix::ThreadSafeRepository>, rx: Receiver<LogReq>, 
                 let now = repo.head_id().ok().map(|id| id.detach());
                 // The list is still correct when HEAD did not move. A walk
                 // of a large history is costly, thus skip it.
-                if now == head {
+                if now == head && sent_any {
                     continue;
                 }
-                head = now;
-                walk = start_walk(&repo);
-                graph = super::graph::Graph::new();
+                if now != head {
+                    head = now;
+                    walk = start_walk(&repo);
+                    graph = super::graph::Graph::new();
+                }
                 replace = true;
                 count
             }
         };
+        sent_any = true;
         let mut entries = Vec::with_capacity(count);
         let mut done = walk.is_none();
         if let Some(w) = walk.as_mut() {

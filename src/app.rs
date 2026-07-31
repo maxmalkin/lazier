@@ -76,6 +76,8 @@ pub enum ConfirmAction {
     Merge(String),
     Revert(String),
     RemoveWorktree(String),
+    /// Go to the worktree that holds a branch.
+    GoToWorktree(String),
     /// Run each command in order. Discard and delete need two commands,
     /// because tracked files and new files need different treatment.
     RunAll(Vec<Vec<String>>),
@@ -368,11 +370,15 @@ impl App {
                     let Mode::Confirm { action, .. } = std::mem::replace(&mut self.mode, Mode::Normal) else {
                         return;
                     };
-                    if let ConfirmAction::RunAll(cmds) = action {
-                        for cmd in cmds {
-                            self.write(cmd);
+                    match action {
+                        ConfirmAction::RunAll(cmds) => {
+                            for cmd in cmds {
+                                self.write(cmd);
+                            }
+                            return;
                         }
-                        return;
+                        ConfirmAction::GoToWorktree(path) => return self.open_worktree(path),
+                        _ => {}
                     }
                     let args: Vec<String> = match action {
                         // A plain delete refuses a branch that is not
@@ -386,7 +392,7 @@ impl App {
                         ConfirmAction::RemoveWorktree(path) => {
                             svec(&["worktree", "remove", &path])
                         }
-                        ConfirmAction::RunAll(_) => return,
+                        ConfirmAction::RunAll(_) | ConfirmAction::GoToWorktree(_) => return,
                     };
                     self.write(args);
                 }
@@ -1011,6 +1017,16 @@ impl App {
                 if let Some(i) = self.running.iter().position(|c| *c == cmd) {
                     self.running.remove(i);
                 }
+                // A checkout fails when another worktree holds the branch.
+                // Offer to go to that worktree instead.
+                if !ok
+                    && let Some(path) = worktree_in_use(&output)
+                {
+                    self.mode = Mode::Confirm {
+                        prompt: format!("that branch is checked out at {path}. go there? y/n"),
+                        action: ConfirmAction::GoToWorktree(path),
+                    };
+                }
                 self.log_cmd(ok, cmd, ms, output);
                 if ok {
                     self.refresh_all();
@@ -1092,6 +1108,20 @@ impl App {
 
 fn svec(args: &[&str]) -> Vec<String> {
     args.iter().map(|s| s.to_string()).collect()
+}
+
+/// Find the worktree path in a git error. Git says:
+///   fatal: 'x' is already used by worktree at '/path/to/tree'
+fn worktree_in_use(output: &[String]) -> Option<String> {
+    for line in output {
+        if let Some((_, rest)) = line.split_once("is already used by worktree at ") {
+            let path = rest.trim().trim_matches('\'').trim_matches('"');
+            if !path.is_empty() {
+                return Some(path.to_string());
+            }
+        }
+    }
+    None
 }
 
 /// The git arguments for a bisect key. None means the key does nothing.
@@ -1349,6 +1379,37 @@ mod tests {
         });
         assert!(app.running.is_empty());
         assert_eq!(app.cmd_log[0].output.len(), 1);
+    }
+
+    #[test]
+    fn a_busy_branch_offers_its_worktree() {
+        let mut app = demo();
+        app.apply_resp(Resp::WriteDone {
+            ok: false,
+            cmd: "git checkout max/pratt".into(),
+            output: vec![
+                "fatal: 'max/pratt' is already used by worktree at '/home/max/pratt'".into(),
+            ],
+            ms: 31,
+        });
+        match &app.mode {
+            Mode::Confirm { action: ConfirmAction::GoToWorktree(p), .. } => {
+                assert_eq!(p, "/home/max/pratt")
+            }
+            _ => panic!("expected the offer to go to the worktree"),
+        }
+    }
+
+    #[test]
+    fn other_errors_open_no_window() {
+        let mut app = demo();
+        app.apply_resp(Resp::WriteDone {
+            ok: false,
+            cmd: "git checkout nope".into(),
+            output: vec!["error: pathspec 'nope' did not match".into()],
+            ms: 5,
+        });
+        assert!(matches!(app.mode, Mode::Normal));
     }
 
     #[test]

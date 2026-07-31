@@ -405,6 +405,9 @@ pub fn render_worktrees(
 /// each one took.
 pub fn render_log(frame: &mut Frame, area: Rect, app: &App) {
     let take = area.height.saturating_sub(2) as usize;
+    let width = area.width.saturating_sub(2).max(1) as usize;
+    // A wrapped line uses more than one row. Count the rows it will use.
+    let height = |line: &Line| line.width().div_ceil(width).max(1);
     // A failed command needs two rows: the command and the reason.
     let rows = |e: &crate::app::LogEntry| {
         let (icon, color) = if e.ok { ("✓", Color::Green) } else { ("✗", Color::Red) };
@@ -424,20 +427,29 @@ pub fn render_log(frame: &mut Frame, area: Rect, app: &App) {
     // Count from the newest entry back. The newest entry always shows,
     // even when its output alone is taller than the pane.
     let mut lines: Vec<Line> = Vec::new();
+    let mut used = 0usize;
     for e in app.cmd_log.iter().rev() {
         let mut r = rows(e);
-        if lines.len() + r.len() > take {
+        let need: usize = r.iter().map(&height).sum();
+        if used + need > take {
             if lines.is_empty() {
-                r.truncate(take);
+                // Keep the rows of the newest entry that fit.
+                let mut fit = 0;
+                while fit < r.len() && used + height(&r[fit]) <= take {
+                    used += height(&r[fit]);
+                    fit += 1;
+                }
+                r.truncate(fit.max(1));
                 lines = r;
             }
             break;
         }
+        used += need;
         r.extend(lines);
         lines = r;
     }
     frame.render_widget(
-        Paragraph::new(lines).block(
+        Paragraph::new(lines).wrap(Wrap { trim: false }).block(
             Block::bordered()
                 .title(Span::styled("[@]─Command log", Style::new().fg(Color::DarkGray)))
                 .border_style(Style::new().fg(Color::DarkGray)),
