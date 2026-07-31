@@ -1,5 +1,6 @@
 //! All gix calls live in this file. When the gix API changes, correct only
 //! this file.
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
 
@@ -17,34 +18,37 @@ pub fn status(repo: &gix::Repository) -> Option<Resp> {
     // The tree-index comparison walks the full HEAD tree. This is costly on
     // a large repository. Skip it when the index cache-tree shows that the
     // index is equal to the HEAD tree. Then no staged changes can exist.
-    let mut files = Vec::new();
+    // Collect both sides for each path. A file can have a staged change and
+    // a work-tree change at the same time, thus it needs one row with two
+    // marks, not two rows.
+    let mut marks: BTreeMap<String, (char, char)> = BTreeMap::new();
     if index_matches_head(repo) {
         for item in platform.into_index_worktree_iter(None).ok()?.filter_map(Result::ok) {
-            files.push(FileEntry {
-                mark: worktree_mark(&item),
-                staged: false,
-                path: item.rela_path().to_string(),
-            });
+            marks.entry(item.rela_path().to_string()).or_insert((' ', ' ')).1 = worktree_mark(&item);
         }
     } else {
         for item in platform.into_iter(None).ok()?.filter_map(Result::ok) {
             use gix::status::Item;
-            let (mark, staged) = match &item {
+            let path = item.location().to_string();
+            let slot = marks.entry(path).or_insert((' ', ' '));
+            match &item {
                 Item::TreeIndex(c) => {
                     use gix::diff::index::ChangeRef;
-                    let m = match c {
+                    slot.0 = match c {
                         ChangeRef::Addition { .. } => 'A',
                         ChangeRef::Deletion { .. } => 'D',
                         ChangeRef::Modification { .. } => 'M',
                         ChangeRef::Rewrite { .. } => 'R',
                     };
-                    (m, true)
                 }
-                Item::IndexWorktree(i) => (worktree_mark(i), false),
-            };
-            files.push(FileEntry { mark, staged, path: item.location().to_string() });
+                Item::IndexWorktree(i) => slot.1 = worktree_mark(i),
+            }
         }
     }
+    let files = marks
+        .into_iter()
+        .map(|(path, (index, work))| FileEntry { index, work, path })
+        .collect();
     Some(Resp::Status(files))
 }
 

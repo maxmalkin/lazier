@@ -14,10 +14,22 @@ use std::sync::mpsc::{Sender, channel};
 
 use crate::event::Msg;
 
+/// One row for each path. `index` is the state against HEAD. `work` is the
+/// state against the index. A space means no change on that side. This is
+/// the same shape as the two columns of `git status --short`.
 pub struct FileEntry {
-    pub mark: char,
-    pub staged: bool,
+    pub index: char,
+    pub work: char,
     pub path: String,
+}
+
+impl FileEntry {
+    pub fn staged(&self) -> bool {
+        self.index != ' '
+    }
+    pub fn conflicted(&self) -> bool {
+        self.work == 'U' || self.index == 'U'
+    }
 }
 
 pub struct BranchEntry {
@@ -89,7 +101,9 @@ pub enum Resp {
     Branches { current: Option<String>, entries: Vec<BranchEntry> },
     Stashes(Vec<String>),
     LogChunk { entries: Vec<CommitEntry>, done: bool },
-    Diff { seq: u64, text: String },
+    /// `text` is the work-tree diff. `staged` is the index diff. A commit
+    /// puts everything in `text` and leaves `staged` empty.
+    Diff { seq: u64, text: String, staged: String },
     WriteDone { ok: bool, cmd: String, msg: String, ms: u64 },
     Sync { ahead: u32, behind: u32, unpushed: std::collections::HashSet<String> },
     Message { text: String, index: usize },
@@ -158,7 +172,10 @@ pub fn spawn(event_tx: Sender<Msg>) -> anyhow::Result<Git> {
                     entries: branches(&worker_root),
                 }),
                 Req::Stashes => read::stashes(&repo),
-                Req::Diff { seq, target } => Some(Resp::Diff { seq, text: display_diff(&worker_root, &target) }),
+                Req::Diff { seq, target } => {
+                    let (text, staged) = display_diff(&worker_root, &target);
+                    Some(Resp::Diff { seq, text, staged })
+                }
                 Req::Write(args) => Some(run_git(&worker_root, &args)),
                 Req::ApplyPatch { patch, reverse } => Some(apply_patch(&worker_root, &patch, reverse)),
                 Req::Sync => Some(sync_state(&worker_root)),
@@ -363,18 +380,18 @@ fn sync_state(root: &PathBuf) -> Resp {
     Resp::Sync { ahead, behind, unpushed }
 }
 
-fn display_diff(root: &PathBuf, target: &DiffTarget) -> String {
-    // The worktree diff is index-to-worktree. The hunk staging mode applies
-    // these hunks with `apply --cached`, thus the base must be the index.
-    let args: Vec<&str> = match target {
-        DiffTarget::WorktreeFile(p) => vec!["diff", "--", p],
-        DiffTarget::Commit(id) => vec!["show", "--stat", "--patch", id],
-    };
-    match Command::new("git").arg("-C").arg(root).args(&args).output() {
-        Ok(out) if out.status.success() && !out.stdout.is_empty() => {
-            String::from_utf8_lossy(&out.stdout).into_owned()
-        }
+fn display_diff(root: &PathBuf, target: &DiffTarget) -> (String, String) {
+    let run = |args: &[&str]| match Command::new("git").arg("-C").arg(root).args(args).output() {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).into_owned(),
         Ok(out) => String::from_utf8_lossy(&out.stderr).into_owned(),
         Err(e) => e.to_string(),
+    };
+    match target {
+        // The work-tree diff is index-to-worktree. The hunk view applies
+        // these hunks with `apply --cached`, thus the base is the index.
+        DiffTarget::WorktreeFile(p) => {
+            (run(&["diff", "--", p]), run(&["diff", "--cached", "--", p]))
+        }
+        DiffTarget::Commit(id) => (run(&["show", "--stat", "--patch", id]), String::new()),
     }
 }

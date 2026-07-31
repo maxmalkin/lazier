@@ -9,6 +9,11 @@ $$ |\$$$$$$$ |$$$$$$$$\ $$ |\$$$$$$$\ $$ |
 \__| \_______|\________|\__| \_______|\__|
 ```
 
+[![ci](https://github.com/maxmalkin/lazier/actions/workflows/ci.yml/badge.svg)](https://github.com/maxmalkin/lazier/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/release/maxmalkin/lazier?color=green)](https://github.com/maxmalkin/lazier/releases)
+[![msrv](https://img.shields.io/badge/msrv-1.85-blue)](https://www.rust-lang.org)
+[![license](https://img.shields.io/github/license/maxmalkin/lazier?color=blue)](LICENSE)
+
 A fast terminal user interface for git. Rust, [ratatui](https://ratatui.rs),
 and [gitoxide](https://github.com/GitoxideLabs/gitoxide).
 

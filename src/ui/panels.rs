@@ -1,5 +1,5 @@
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
@@ -128,21 +128,25 @@ fn tree_line(app: &App, i: usize) -> Line<'static> {
     let pad = "  ".repeat(row.depth as usize);
     if let Some(dir) = &row.dir {
         let arrow = if app.collapsed.contains(dir) { '▸' } else { '▾' };
+        // The root row already carries its slash.
+        let slash = if dir.is_empty() { "" } else { "/" };
         return Line::styled(
-            format!("  {pad}{arrow} {}/", row.name),
+            format!("   {pad}{arrow} {}{slash}", row.name),
             Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
         );
     }
     let f = &app.repo.files[row.file.unwrap_or(0)];
-    let path_color = if f.staged { Color::Green } else { Color::Red };
-    let stage = if f.staged {
-        Span::styled("S", Style::new().fg(Color::Green).add_modifier(Modifier::BOLD))
+    // Green for what is in the index, red for what is not, as lazygit does.
+    let path_color = if f.conflicted() {
+        Color::LightRed
+    } else if f.work == ' ' {
+        Color::Green
     } else {
-        Span::raw(" ")
+        Color::Red
     };
     Line::from(vec![
-        stage,
-        Span::styled(f.mark.to_string(), Style::new().fg(mark_color(f.mark))),
+        Span::styled(f.index.to_string(), Style::new().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        Span::styled(f.work.to_string(), Style::new().fg(mark_color(f.work))),
         Span::styled(format!(" {pad}{}", row.name), Style::new().fg(path_color)),
     ])
 }
@@ -284,23 +288,48 @@ pub fn render_main(frame: &mut Frame, area: Rect, app: &App) {
         }
         _ => {}
     }
-    // The title names what the diff shows, as lazygit does it.
-    let title = match app.focus {
-        1 => match app.repo.files.get(app.tree.get(app.selected[1]).and_then(|r| r.file).unwrap_or(0)) {
-            Some(f) if f.staged => "[0]─Staged changes",
-            _ => "[0]─Unstaged changes",
-        },
-        3 => "[0]─Commit",
-        _ => "[0]─Diff",
+    // A file with changes in both places gets two panes, as lazygit does.
+    if !app.repo.diff_staged.is_empty() {
+        let [top, bottom] =
+            Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(area);
+        diff_pane(
+            frame,
+            top,
+            "[0]─Unstaged changes",
+            &app.repo.diff,
+            app.diff_scroll,
+            app.focus == 5 && !app.on_staged,
+        );
+        diff_pane(
+            frame,
+            bottom,
+            "[0]─Staged changes",
+            &app.repo.diff_staged,
+            app.staged_scroll,
+            app.focus == 5 && app.on_staged,
+        );
+        return;
     }
-    .to_string();
-    let text = app.repo.diff.as_str();
-    let focused = app.focus == 5;
+    let title = match app.focus {
+        3 => "[0]─Commit",
+        _ => "[0]─Unstaged changes",
+    };
+    diff_pane(frame, area, title, &app.repo.diff, app.diff_scroll, app.focus == 5);
+}
+
+fn diff_pane(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    text: &str,
+    scroll: u16,
+    focused: bool,
+) {
     // A wrapped line can use more than one row. Take more lines than the
     // height, then let the widget cut what does not fit.
     let lines: Vec<Line> = text
         .lines()
-        .skip(app.diff_scroll as usize)
+        .skip(scroll as usize)
         .take(area.height as usize * 4)
         .map(|l| {
             // File header lines come before the +/- check. A "---" line is
@@ -324,7 +353,10 @@ pub fn render_main(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(
         Paragraph::new(lines).wrap(Wrap { trim: false }).block(
             Block::bordered()
-                .title(Span::styled(title, Style::new().fg(border).add_modifier(Modifier::BOLD)))
+                .title(Span::styled(
+                    title.to_string(),
+                    Style::new().fg(border).add_modifier(Modifier::BOLD),
+                ))
                 .border_style(Style::new().fg(border)),
         ),
         area,

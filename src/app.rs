@@ -34,6 +34,8 @@ pub struct RepoState {
     pub stashes: Vec<String>,
     pub log_done: bool,
     pub diff: String,
+    /// The diff of the changes that are in the index.
+    pub diff_staged: String,
     pub ahead: u32,
     pub behind: u32,
     pub bisecting: bool,
@@ -109,8 +111,12 @@ pub struct App {
     pub message_ok: bool,
     pub zoom: bool,
     pub diff_scroll: u16,
-    /// The number of lines in the diff text. The scroll must not go past it.
+    pub staged_scroll: u16,
+    /// True when the staged pane has the focus, not the work-tree pane.
+    pub on_staged: bool,
+    /// The number of lines in each diff. The scroll must not go past them.
     diff_lines: u16,
+    staged_lines: u16,
     pub tree: Vec<TreeRow>,
     pub collapsed: HashSet<String>,
     pub cmd_log: Vec<LogEntry>,
@@ -139,7 +145,10 @@ impl App {
             message_ok: true,
             zoom: false,
             diff_scroll: 0,
+            staged_scroll: 0,
+            on_staged: false,
             diff_lines: 0,
+            staged_lines: 0,
             tree: Vec::new(),
             collapsed: HashSet::new(),
             cmd_log: Vec::new(),
@@ -651,14 +660,20 @@ impl App {
             Action::Quit => self.quit = true,
             Action::NextPanel => self.focus = (self.focus + 1) % 6,
             Action::PrevPanel => self.focus = (self.focus + 5) % 6,
+            // A second press of the diff key moves to the other diff pane.
+            Action::FocusPanel(5) if self.focus == 5 && !self.repo.diff_staged.is_empty() => {
+                self.on_staged = !self.on_staged;
+            }
             Action::FocusPanel(i) => self.focus = i,
             // In the diff pane, the motion keys scroll the text.
             Action::Down if self.focus == 5 => self.scroll_diff(1),
             Action::Up if self.focus == 5 => self.scroll_diff(-1),
             Action::PageDown if self.focus == 5 => self.scroll_diff(15),
             Action::PageUp if self.focus == 5 => self.scroll_diff(-15),
-            Action::Top if self.focus == 5 => self.diff_scroll = 0,
-            Action::Bottom if self.focus == 5 => self.diff_scroll = self.diff_lines.saturating_sub(1),
+            Action::Top if self.focus == 5 => {
+                if self.on_staged { self.staged_scroll = 0 } else { self.diff_scroll = 0 }
+            }
+            Action::Bottom if self.focus == 5 => self.scroll_diff(i16::MAX),
             Action::Down => {
                 let len = self.panel_len(self.focus);
                 let sel = &mut self.selected[self.focus];
@@ -694,7 +709,7 @@ impl App {
                 if let Some(dir) = self.selected_row().and_then(|r| r.dir.clone()) {
                     self.write(svec(&["add", "--", &dir]));
                 } else if let Some(f) = self.selected_file() {
-                    let args = if f.staged {
+                    let args = if f.staged() && f.work == ' ' {
                         svec(&["restore", "--staged", "--", &f.path])
                     } else {
                         svec(&["add", "--", &f.path])
@@ -747,7 +762,7 @@ impl App {
             Action::TakeOurs | Action::TakeTheirs => {
                 let side = if matches!(action, Action::TakeOurs) { "--ours" } else { "--theirs" };
                 if let Some(f) = self.selected_file()
-                    && f.mark == 'U'
+                    && f.conflicted()
                 {
                     let path = f.path.clone();
                     self.write(svec(&["checkout", side, "--", &path]));
@@ -896,11 +911,18 @@ impl App {
                 self.clamp(3);
             }
             // Ignore a diff for an old selection. Only the last request counts.
-            Resp::Diff { seq, text } => {
+            Resp::Diff { seq, text, staged } => {
                 if seq == self.diff_seq {
                     self.diff_lines = text.lines().count().min(u16::MAX as usize) as u16;
+                    self.staged_lines = staged.lines().count().min(u16::MAX as usize) as u16;
                     self.repo.diff = text;
+                    self.repo.diff_staged = staged;
                     self.diff_scroll = 0;
+                    self.staged_scroll = 0;
+                    // Do not stay on a pane that has no content.
+                    if self.repo.diff_staged.is_empty() {
+                        self.on_staged = false;
+                    }
                 }
             }
             Resp::WriteDone { ok, cmd, msg, ms } => {
@@ -933,10 +955,15 @@ impl App {
         }
     }
 
-    // Keep at least one line of the diff in view.
+    // Keep at least one line of the diff in view. The scroll goes to the
+    // pane that has the focus.
     fn scroll_diff(&mut self, delta: i16) {
-        let last = self.diff_lines.saturating_sub(1);
-        self.diff_scroll = self.diff_scroll.saturating_add_signed(delta).min(last);
+        let (scroll, lines) = if self.on_staged {
+            (&mut self.staged_scroll, self.staged_lines)
+        } else {
+            (&mut self.diff_scroll, self.diff_lines)
+        };
+        *scroll = scroll.saturating_add_signed(delta).min(lines.saturating_sub(1));
     }
 
     fn clamp(&mut self, panel: usize) {
@@ -1018,9 +1045,9 @@ mod tests {
         let mut app = App::new();
         app.repo.head = Some("main".into());
         app.repo.ahead = 2;
-        app.repo.files = [('M', true, "src/main.rs"), ('A', false, "src/app.rs"), ('?', false, "notes.txt")]
+        app.repo.files = [('M', 'M', "src/main.rs"), (' ', 'A', "src/app.rs"), (' ', '?', "notes.txt")]
             .into_iter()
-            .map(|(mark, staged, path)| FileEntry { mark, staged, path: path.into() })
+            .map(|(index, work, path)| FileEntry { index, work, path: path.into() })
             .collect();
         app.repo.unpushed = ["0a0c000".to_string(), "0a0c001".to_string()].into();
         app.repo.branches =
@@ -1051,6 +1078,7 @@ mod tests {
             })
             .collect();
         app.repo.diff = "diff --git a/src/main.rs b/src/main.rs\n+added line\n-removed line".into();
+        app.repo.diff_staged = "diff --git a/src/main.rs b/src/main.rs\n+staged line".into();
         app.rebuild_tree();
         app
     }
