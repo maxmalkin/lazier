@@ -108,13 +108,15 @@ pub fn log_thread(shared: Arc<gix::ThreadSafeRepository>, rx: Receiver<LogReq>, 
     // The cache keeps decoded delta bases. Without it, the walk decodes the
     // same base objects again for each commit.
     repo.object_cache_size(Some(16 * 1024 * 1024));
-    let mut walk = repo.head_id().ok().and_then(|id| id.ancestors().all().ok());
+    let mut walk = repo.head_id().ok().and_then(|id| id.ancestors().sorting(gix::revision::walk::Sorting::ByCommitTime(Default::default())).all().ok());
+    let mut graph: super::graph::Graph<gix::ObjectId> = super::graph::Graph::new();
     for req in rx {
         let count = match req {
             LogReq::Chunk(count) => count,
             // A reset starts the walk again from the new HEAD.
             LogReq::Reset => {
-                walk = repo.head_id().ok().and_then(|id| id.ancestors().all().ok());
+                walk = repo.head_id().ok().and_then(|id| id.ancestors().sorting(gix::revision::walk::Sorting::ByCommitTime(Default::default())).all().ok());
+                graph = super::graph::Graph::new();
                 continue;
             }
         };
@@ -124,15 +126,26 @@ pub fn log_thread(shared: Arc<gix::ThreadSafeRepository>, rx: Receiver<LogReq>, 
             for _ in 0..count {
                 match w.next() {
                     Some(Ok(info)) => {
-                        let subject = info
-                            .object()
-                            .ok()
-                            .and_then(|c| c.message().ok().map(|m| m.summary().to_string()))
-                            .unwrap_or_default();
+                        let parents: Vec<gix::ObjectId> = info.parent_ids.iter().cloned().collect();
+                        let row = graph.row(&info.id, &parents);
+                        let (subject, author, time) = match info.object() {
+                            Ok(c) => (
+                                c.message().ok().map(|m| m.summary().to_string()).unwrap_or_default(),
+                                c.author().ok().map(|a| a.name.to_string()).unwrap_or_default(),
+                                c.time().ok().map(|t| t.seconds.max(0) as u32).unwrap_or(0),
+                            ),
+                            Err(_) => (String::new(), String::new(), 0),
+                        };
                         let mut id = [b'0'; 7];
                         let hex = info.id.to_hex_with_len(7).to_string();
                         id.copy_from_slice(&hex.as_bytes()[..7]);
-                        entries.push(CommitEntry { id, subject: subject.into() });
+                        entries.push(CommitEntry {
+                            id,
+                            graph: row.into(),
+                            subject: subject.into(),
+                            author: author.into(),
+                            time,
+                        });
                     }
                     Some(Err(_)) => continue,
                     None => {

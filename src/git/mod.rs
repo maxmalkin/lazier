@@ -1,5 +1,6 @@
 //! This is the git backend. Reads use gix. Only read.rs can import gix.
 //! Writes and display diffs use the git subprocess.
+pub mod graph;
 pub mod patch;
 mod read;
 pub mod watch;
@@ -19,10 +20,13 @@ pub struct FileEntry {
 }
 
 // Keep this struct small. The list can hold more than one million entries.
-// The short id is inline, thus each entry makes only one heap allocation.
+// The short id is inline. Box<str> fields save the capacity word of String.
 pub struct CommitEntry {
     pub id: [u8; 7],
+    pub graph: Box<str>,
     pub subject: Box<str>,
+    pub author: Box<str>,
+    pub time: u32,
 }
 
 impl CommitEntry {
