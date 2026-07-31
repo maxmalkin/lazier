@@ -135,47 +135,47 @@ fn render_commit(
 // Key hints for each pane. The bar shows them when there is no message.
 type Hints = &'static [(&'static str, &'static str)];
 const HINTS: [Hints; 6] = [
-    &[("r", "refresh")],
+    &[("r", "Refresh")],
     &[
-        ("space", "stage"),
-        ("a", "all"),
-        ("c", "commit"),
-        ("C", "editor"),
-        ("s", "stash"),
-        ("enter", "hunks/fold"),
-        ("o/t", "ours/theirs"),
+        ("<space>", "Stage"),
+        ("a", "Stage all"),
+        ("c", "Commit"),
+        ("C", "Editor"),
+        ("s", "Stash"),
+        ("<enter>", "Hunks"),
+        ("o/t", "Ours/theirs"),
     ],
     &[
-        ("enter", "checkout"),
-        ("n", "new"),
-        ("d/D", "delete"),
-        ("R", "rename"),
-        ("m", "merge"),
-        ("P/p/f", "push/pull/fetch"),
+        ("<enter>", "Checkout"),
+        ("n", "New"),
+        ("d/D", "Delete"),
+        ("R", "Rename"),
+        ("m", "Merge"),
+        ("P/p/f", "Push/pull/fetch"),
     ],
     &[
-        ("enter", "zoom"),
-        ("i", "rebase"),
-        ("w", "reword"),
-        ("v", "revert"),
-        ("y", "cherry-pick"),
-        ("b/o", "bisect bad/good"),
+        ("<enter>", "Graph"),
+        ("i", "Rebase"),
+        ("w", "Reword"),
+        ("v", "Revert"),
+        ("y", "Cherry-pick"),
+        ("b/o", "Bisect"),
     ],
-    &[("enter/a", "apply"), ("p", "pop"), ("d", "drop")],
-    &[("j/k", "scroll"), ("g/G", "top/bottom")],
+    &[("<enter>", "Apply"), ("p", "Pop"), ("d", "Drop")],
+    &[("j/k", "Scroll"), ("g/G", "Top/bottom")],
 ];
-const GLOBAL_HINTS: Hints = &[("?", "help"), ("@", "log"), ("q", "quit")];
+const GLOBAL_HINTS: Hints = &[("?", "Keys"), ("W", "Worktrees"), ("@", "Log"), ("q", "Quit")];
 
-// Make one line of "key desc · key desc" with the keys in a bright color.
+// Make one line of "Desc: key | Desc: key", the shape lazygit uses.
 fn hint_line(groups: &[Hints]) -> Line<'static> {
     let mut spans = Vec::new();
     for (gi, group) in groups.iter().enumerate() {
         for (i, (key, desc)) in group.iter().enumerate() {
             if gi > 0 || i > 0 {
-                spans.push(Span::styled(" · ", DIM));
+                spans.push(Span::styled(" | ", DIM));
             }
+            spans.push(Span::styled(format!("{desc}: "), DESC));
             spans.push(Span::styled(*key, KEY));
-            spans.push(Span::styled(format!(" {desc}"), DESC));
         }
     }
     Line::from(spans)
@@ -195,33 +195,33 @@ fn render_bar(frame: &mut Frame, area: Rect, app: &App) {
             )];
             spans.extend(
                 hint_line(&[&[
-                    ("space", "mark line"),
-                    ("enter", "stage marked"),
-                    ("a", "stage hunk"),
-                    ("J/K", "hunk"),
-                    ("esc", "back"),
+                    ("<space>", "Mark line"),
+                    ("<enter>", "Stage marked"),
+                    ("a", "Stage hunk"),
+                    ("J/K", "Hunk"),
+                    ("<esc>", "Back"),
                 ]])
                 .spans,
             );
             Line::from(spans)
         }
         Mode::Rebase { .. } => hint_line(&[&[
-            ("p", "pick"),
-            ("r", "reword"),
-            ("e", "edit"),
-            ("s", "squash"),
-            ("f", "fixup"),
-            ("d", "drop"),
-            ("J/K", "move"),
-            ("enter", "run"),
-            ("esc", "cancel"),
+            ("p", "Pick"),
+            ("r", "Reword"),
+            ("e", "Edit"),
+            ("s", "Squash"),
+            ("f", "Fixup"),
+            ("d", "Drop"),
+            ("J/K", "Move"),
+            ("<enter>", "Run"),
+            ("<esc>", "Cancel"),
         ]]),
         Mode::Help => Line::styled("press any key to close the help", Style::new().fg(Color::Cyan)),
         Mode::Worktrees { .. } => hint_line(&[&[
-            ("enter", "go to it"),
-            ("n", "new"),
-            ("d", "remove"),
-            ("esc", "close"),
+            ("<enter>", "Go to it"),
+            ("n", "New"),
+            ("d", "Remove"),
+            ("<esc>", "Close"),
         ]]),
         // A bisect takes over four keys of the commits panel.
         Mode::Normal if app.repo.bisecting => {
@@ -230,14 +230,7 @@ fn render_bar(frame: &mut Frame, area: Rect, app: &App) {
                 Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD),
             )];
             spans.extend(
-                hint_line(&[&[
-                    ("b", "bad"),
-                    ("o", "good"),
-                    ("S", "skip"),
-                    ("A", "reset"),
-                    ("@", "log"),
-                ]])
-                .spans,
+                hint_line(&[&[("b", "Bad"), ("o", "Good"), ("S", "Skip"), ("A", "Reset")]]).spans,
             );
             Line::from(spans)
         }

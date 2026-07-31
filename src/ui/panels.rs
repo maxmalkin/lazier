@@ -36,18 +36,46 @@ fn graph_spans(graph: &str) -> Vec<Span<'static>> {
         .collect()
 }
 
+// Two letters from the name of the author, as lazygit shows them.
+fn initials(author: &str) -> String {
+    let mut out = String::new();
+    for word in author.split_whitespace().take(2) {
+        if let Some(c) = word.chars().next() {
+            out.extend(c.to_uppercase());
+        }
+    }
+    if out.is_empty() { "??".into() } else { format!("{out:<2}") }
+}
+
+// Give each author a steady color. The sum of the letters picks it.
+fn author_color(author: &str) -> Color {
+    const PALETTE: [Color; 6] = [
+        Color::LightMagenta,
+        Color::LightGreen,
+        Color::LightYellow,
+        Color::LightCyan,
+        Color::LightBlue,
+        Color::LightRed,
+    ];
+    let sum: u32 = author.bytes().map(u32::from).sum();
+    PALETTE[sum as usize % PALETTE.len()]
+}
+
 fn commit_line(c: &CommitEntry, zoomed: bool, unpushed: bool) -> Line<'static> {
-    let mut spans = graph_spans(&c.graph);
+    // The order matches lazygit: id, author, graph, then the subject.
+    let mut spans = vec![
+        Span::styled(c.id_str().to_string(), Style::new().fg(Color::Yellow)),
+        Span::raw(" "),
+        Span::styled(initials(&c.author), Style::new().fg(author_color(&c.author))),
+        Span::raw(" "),
+    ];
+    if zoomed {
+        spans.push(Span::styled(format!("{} ", ymd(c.time)), Style::new().fg(Color::DarkGray)));
+    }
+    spans.extend(graph_spans(&c.graph));
     // An up arrow marks a commit that the upstream branch does not have.
     if unpushed {
-        spans.push(Span::styled(" ↑", Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
-    } else {
-        spans.push(Span::raw(" "));
-    }
-    spans.push(Span::styled(format!(" {}", c.id_str()), Style::new().fg(Color::DarkGray)));
-    if zoomed {
-        spans.push(Span::styled(format!(" {}", ymd(c.time)), Style::new().fg(Color::DarkGray)));
-        spans.push(Span::styled(format!(" {:<16.16}", &*c.author), Style::new().fg(Color::Blue)));
+        spans.push(Span::styled("↑", Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
     }
     spans.push(Span::raw(format!(" {}", c.subject)));
     Line::from(spans)
@@ -72,11 +100,13 @@ fn ymd(secs: u32) -> String {
 // number of commits to push and to pull.
 fn branch_line(b: &BranchEntry) -> Line<'static> {
     let (icon, name_style) = if b.current {
-        ("●", Style::new().fg(Color::Green).add_modifier(Modifier::BOLD))
+        ("*", Style::new().fg(Color::Green).add_modifier(Modifier::BOLD))
     } else {
         (" ", Style::new())
     };
     let mut spans = vec![
+        // The age column comes first, as lazygit shows it.
+        Span::styled(format!("{:>4} ", b.age), Style::new().fg(Color::Cyan)),
         Span::styled(icon, Style::new().fg(Color::Green)),
         Span::styled(format!(" {}", b.name), name_style),
     ];
@@ -163,7 +193,7 @@ pub fn render_left(frame: &mut Frame, areas: [Rect; 5], app: &App) {
     ];
     // Each title carries the key that focuses the panel.
     for (i, area) in areas.into_iter().enumerate() {
-        let title = format!("[{}] {}", i + 1, PANELS[i]);
+        let title = format!("[{}]─{}", i + 1, PANELS[i]);
         list::render(frame, area, &title, app.focus == i, app.selected[i], app.panel_len(i), rows[i]);
     }
 }
@@ -254,7 +284,17 @@ pub fn render_main(frame: &mut Frame, area: Rect, app: &App) {
         }
         _ => {}
     }
-    let (title, text): (String, &str) = ("[0] Diff".into(), app.repo.diff.as_str());
+    // The title names what the diff shows, as lazygit does it.
+    let title = match app.focus {
+        1 => match app.repo.files.get(app.tree.get(app.selected[1]).and_then(|r| r.file).unwrap_or(0)) {
+            Some(f) if f.staged => "[0]─Staged changes",
+            _ => "[0]─Unstaged changes",
+        },
+        3 => "[0]─Commit",
+        _ => "[0]─Diff",
+    }
+    .to_string();
+    let text = app.repo.diff.as_str();
     let focused = app.focus == 5;
     // A wrapped line can use more than one row. Take more lines than the
     // height, then let the widget cut what does not fit.
@@ -282,9 +322,11 @@ pub fn render_main(frame: &mut Frame, area: Rect, app: &App) {
         .collect();
     let border = if focused { Color::Green } else { Color::DarkGray };
     frame.render_widget(
-        Paragraph::new(lines)
-            .wrap(Wrap { trim: false })
-            .block(Block::bordered().title(title).border_style(Style::new().fg(border))),
+        Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+            Block::bordered()
+                .title(Span::styled(title, Style::new().fg(border).add_modifier(Modifier::BOLD)))
+                .border_style(Style::new().fg(border)),
+        ),
         area,
     );
 }
@@ -338,8 +380,11 @@ pub fn render_log(frame: &mut Frame, area: Rect, app: &App) {
         lines = r;
     }
     frame.render_widget(
-        Paragraph::new(lines)
-            .block(Block::bordered().title("[@] Command log").border_style(Style::new().fg(Color::DarkGray))),
+        Paragraph::new(lines).block(
+            Block::bordered()
+                .title(Span::styled("[@]─Command log", Style::new().fg(Color::DarkGray)))
+                .border_style(Style::new().fg(Color::DarkGray)),
+        ),
         area,
     );
 }

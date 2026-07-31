@@ -27,6 +27,8 @@ pub struct BranchEntry {
     pub behind: u32,
     /// The upstream branch is not there any more.
     pub gone: bool,
+    /// The age of the last commit, in a short form such as "3d".
+    pub age: String,
 }
 
 // Keep this struct small. The list can hold more than one million entries.
@@ -251,7 +253,7 @@ fn branches(root: &PathBuf) -> Vec<BranchEntry> {
         .args([
             "for-each-ref",
             "--sort=-committerdate",
-            "--format=%(refname:short)\t%(HEAD)\t%(upstream:track)",
+            "--format=%(refname:short)\t%(HEAD)\t%(upstream:track)\t%(committerdate:relative)",
             "refs/heads/",
         ])
         .output();
@@ -270,6 +272,7 @@ fn branches(root: &PathBuf) -> Vec<BranchEntry> {
                 ahead: track_count(track, "ahead "),
                 behind: track_count(track, "behind "),
                 gone: track.contains("gone"),
+                age: short_age(parts.next().unwrap_or("")),
             })
         })
         .collect();
@@ -311,6 +314,20 @@ fn worktrees(root: &PathBuf) -> Vec<WorktreeEntry> {
         }
     }
     list
+}
+
+/// Make a short age from the words that git gives. "3 days ago" gives "3d".
+fn short_age(text: &str) -> String {
+    let mut words = text.split_whitespace();
+    let Some(n) = words.next() else { return String::new() };
+    let Some(unit) = words.next() else { return String::new() };
+    // "2 years, 3 months ago" keeps only the first part.
+    let letter = unit.trim_end_matches(',').chars().next().unwrap_or(' ');
+    match n.parse::<u32>() {
+        Ok(n) => format!("{n}{letter}"),
+        // Git also says "just now" and similar.
+        Err(_) => "now".into(),
+    }
 }
 
 fn track_count(track: &str, word: &str) -> u32 {

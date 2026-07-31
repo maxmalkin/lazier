@@ -1023,16 +1023,18 @@ mod tests {
             .map(|(mark, staged, path)| FileEntry { mark, staged, path: path.into() })
             .collect();
         app.repo.unpushed = ["0a0c000".to_string(), "0a0c001".to_string()].into();
-        app.repo.branches = [("main", true, 2, 0), ("feature/ui", false, 1, 3), ("old/thing", false, 0, 0)]
-            .into_iter()
-            .map(|(name, current, ahead, behind)| BranchEntry {
-                name: name.into(),
-                current,
-                ahead,
-                behind,
-                gone: false,
-            })
-            .collect();
+        app.repo.branches =
+            [("main", true, 2, 0, "2h"), ("feature/ui", false, 1, 3, "1d"), ("old/thing", false, 0, 0, "3w")]
+                .into_iter()
+                .map(|(name, current, ahead, behind, age)| BranchEntry {
+                    name: name.into(),
+                    current,
+                    ahead,
+                    behind,
+                    gone: false,
+                    age: age.into(),
+                })
+                .collect();
         app.repo.stashes = vec!["stash@{0}: WIP on main".into()];
         app.repo.commits = (0..100_000)
             .map(|i| {
