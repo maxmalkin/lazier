@@ -986,6 +986,13 @@ impl App {
                 self.log_inflight = false;
                 self.clamp(3);
             }
+            // HEAD moved, thus the old list is wrong.
+            Resp::LogReplace { entries, done } => {
+                self.repo.commits = entries;
+                self.repo.log_done = done;
+                self.log_inflight = false;
+                self.clamp(3);
+            }
             // Ignore a diff for an old selection. Only the last request counts.
             Resp::Diff { seq, text, staged } => {
                 if seq == self.diff_seq {
@@ -1047,11 +1054,9 @@ impl App {
         for req in [Req::Status, Req::Branches, Req::Stashes, Req::Sync] {
             git.send(req);
         }
-        self.repo.commits.clear();
-        self.repo.log_done = false;
-        git.send(Req::LogReset);
-        git.send(Req::LogChunk { count: LOG_CHUNK });
-        self.log_inflight = true;
+        // The log thread walks again only when HEAD moved. A stage or a
+        // fetch keeps the list that is already in memory.
+        git.send(Req::LogRefresh { count: LOG_CHUNK });
         // Force a new diff request for the current selection.
         self.diff_target = None;
         let dir = self.git.as_ref().map(|g| g.git_dir.clone());

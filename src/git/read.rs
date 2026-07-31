@@ -101,6 +101,16 @@ pub fn stashes(repo: &gix::Repository) -> Option<Resp> {
     Some(Resp::Stashes(out))
 }
 
+// Start a walk from HEAD, the newest commit first.
+fn start_walk(repo: &gix::Repository) -> Option<gix::revision::Walk<'_>> {
+    repo.head_id().ok().and_then(|id| {
+        id.ancestors()
+            .sorting(gix::revision::walk::Sorting::ByCommitTime(Default::default()))
+            .all()
+            .ok()
+    })
+}
+
 /// This thread owns the ancestor walker for its full life. The walker
 /// borrows the thread-local repository, thus both stay in this stack frame.
 /// Each request pulls the next `count` commits from the walker.
@@ -109,16 +119,25 @@ pub fn log_thread(shared: Arc<gix::ThreadSafeRepository>, rx: Receiver<LogReq>, 
     // The cache keeps decoded delta bases. Without it, the walk decodes the
     // same base objects again for each commit.
     repo.object_cache_size(Some(16 * 1024 * 1024));
-    let mut walk = repo.head_id().ok().and_then(|id| id.ancestors().sorting(gix::revision::walk::Sorting::ByCommitTime(Default::default())).all().ok());
+    let mut head = repo.head_id().ok().map(|id| id.detach());
+    let mut walk = start_walk(&repo);
     let mut graph: super::graph::Graph<gix::ObjectId> = super::graph::Graph::new();
     for req in rx {
+        let mut replace = false;
         let count = match req {
             LogReq::Chunk(count) => count,
-            // A reset starts the walk again from the new HEAD.
-            LogReq::Reset => {
-                walk = repo.head_id().ok().and_then(|id| id.ancestors().sorting(gix::revision::walk::Sorting::ByCommitTime(Default::default())).all().ok());
+            LogReq::Refresh(count) => {
+                let now = repo.head_id().ok().map(|id| id.detach());
+                // The list is still correct when HEAD did not move. A walk
+                // of a large history is costly, thus skip it.
+                if now == head {
+                    continue;
+                }
+                head = now;
+                walk = start_walk(&repo);
                 graph = super::graph::Graph::new();
-                continue;
+                replace = true;
+                count
             }
         };
         let mut entries = Vec::with_capacity(count);
@@ -156,7 +175,12 @@ pub fn log_thread(shared: Arc<gix::ThreadSafeRepository>, rx: Receiver<LogReq>, 
                 }
             }
         }
-        if ev.send(Msg::Git(Resp::LogChunk { entries, done })).is_err() {
+        let resp = if replace {
+            Resp::LogReplace { entries, done }
+        } else {
+            Resp::LogChunk { entries, done }
+        };
+        if ev.send(Msg::Git(resp)).is_err() {
             break;
         }
     }

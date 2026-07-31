@@ -10,6 +10,7 @@ use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Sender, channel};
 
 use crate::event::Msg;
@@ -62,7 +63,9 @@ impl CommitEntry {
 
 pub enum LogReq {
     Chunk(usize),
-    Reset,
+    /// Look at HEAD. Walk again only when HEAD moved. A refresh after a
+    /// stage or a fetch must not throw away a long list of commits.
+    Refresh(usize),
 }
 
 pub enum Req {
@@ -70,7 +73,7 @@ pub enum Req {
     Branches,
     Stashes,
     LogChunk { count: usize },
-    LogReset,
+    LogRefresh { count: usize },
     Diff { seq: u64, target: DiffTarget },
     /// Run a git command with the given arguments. Capture the output.
     Write(Vec<String>),
@@ -103,6 +106,8 @@ pub enum Resp {
     Branches { current: Option<String>, entries: Vec<BranchEntry> },
     Stashes(Vec<String>),
     LogChunk { entries: Vec<CommitEntry>, done: bool },
+    /// HEAD moved. These entries take the place of the whole list.
+    LogReplace { entries: Vec<CommitEntry>, done: bool },
     /// `text` is the work-tree diff. `staged` is the index diff. A commit
     /// puts everything in `text` and leaves `staged` empty.
     Diff { seq: u64, text: String, staged: String },
@@ -127,8 +132,8 @@ impl Git {
             Req::LogChunk { count } => {
                 let _ = self.log_tx.send(LogReq::Chunk(count));
             }
-            Req::LogReset => {
-                let _ = self.log_tx.send(LogReq::Reset);
+            Req::LogRefresh { count } => {
+                let _ = self.log_tx.send(LogReq::Refresh(count));
             }
             _ => {
                 let _ = self.tx.send(req);
@@ -155,20 +160,28 @@ pub fn spawn(event_tx: Sender<Msg>) -> anyhow::Result<Git> {
     std::thread::spawn(move || read::log_thread(repo, log_rx, ev));
 
     let worker_root = root.clone();
+    let scanning = Arc::new(AtomicBool::new(false));
     std::thread::spawn(move || {
         let repo = shared.to_thread_local();
         for req in rx {
             let resp = match req {
                 // A status scan can be slow on a large repository. Run it in
                 // its own thread. Then the other reads do not wait for it.
+                // One scan at a time is enough: a scan that starts later
+                // sees the same work tree.
                 Req::Status => {
-                    let (sh, ev) = (shared.clone(), event_tx.clone());
-                    std::thread::spawn(move || {
-                        let repo = sh.to_thread_local();
-                        if let Some(resp) = read::status(&repo) {
-                            let _ = ev.send(Msg::Git(resp));
-                        }
-                    });
+                    if !scanning.swap(true, Ordering::AcqRel) {
+                        let (sh, ev, flag) =
+                            (shared.clone(), event_tx.clone(), scanning.clone());
+                        std::thread::spawn(move || {
+                            let repo = sh.to_thread_local();
+                            let resp = read::status(&repo);
+                            flag.store(false, Ordering::Release);
+                            if let Some(resp) = resp {
+                                let _ = ev.send(Msg::Git(resp));
+                            }
+                        });
+                    }
                     None
                 }
                 Req::Branches => Some(Resp::Branches {
@@ -213,7 +226,7 @@ pub fn spawn(event_tx: Sender<Msg>) -> anyhow::Result<Git> {
                         .unwrap_or_default();
                     Some(Resp::Message { text, index })
                 }
-                Req::LogChunk { .. } | Req::LogReset => None,
+                Req::LogChunk { .. } | Req::LogRefresh { .. } => None,
             };
             if let Some(resp) = resp
                 && event_tx.send(Msg::Git(resp)).is_err()
