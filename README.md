@@ -8,8 +8,7 @@ with less memory and less processor time.
 
 ## Speed and memory
 
-Apple Silicon, macOS. lazygit 0.61.1, gitui 0.28.1, lazier 0.1.0. Each
-program starts, draws its first screen, then quits. Less is better.
+Less is better.
 
 | Test | | lazygit | gitui | lazier |
 |------|---|--------:|------:|-------:|
@@ -68,10 +67,6 @@ Move with `j` and `k`, `ctrl-d` and `ctrl-u`, `g` and `G`.
   `v` revert · `↑` marks a commit the upstream branch does not have
 - **Rebase.** `p` `r` `e` `s` `f` `d` set the action · `J` `K` move a commit
   · `enter` run. If it stops: `c` continue · `s` skip · `A` abort
-
-## Not there yet
-
-Staging one line · custom patches · bisect · worktrees · a configuration file
 
 ## License
 
