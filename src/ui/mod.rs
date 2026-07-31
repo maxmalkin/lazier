@@ -5,7 +5,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph};
+use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 
 use crate::app::{App, Mode};
 
@@ -42,9 +42,78 @@ pub fn render(frame: &mut Frame, app: &App) {
         panels::render_main(frame, main, app);
     }
     render_bar(frame, bar, app);
-    if matches!(app.mode, Mode::Help) {
-        render_help(frame, body);
+    match &app.mode {
+        Mode::Help => render_help(frame, body),
+        Mode::CommitMsg { summary, body: text, on_body } => {
+            render_commit(frame, body, summary, text, *on_body)
+        }
+        _ => {}
     }
+}
+
+// Put a box of the given size in the middle of an area.
+fn centered(area: Rect, w: u16, h: u16) -> Rect {
+    let w = w.min(area.width);
+    let h = h.min(area.height);
+    Rect {
+        x: area.x + (area.width.saturating_sub(w)) / 2,
+        y: area.y + (area.height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
+    }
+}
+
+/// The commit message window. The summary line is on top. The body is
+/// below it. Tab moves between them.
+fn render_commit(frame: &mut Frame, body_area: Rect, summary: &str, body: &str, on_body: bool) {
+    let area = centered(body_area, 72, 14);
+    frame.render_widget(Clear, area);
+    let outer = Block::bordered()
+        .title(Span::styled(" Commit ", Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)))
+        .border_style(Style::new().fg(Color::Cyan));
+    let inner = outer.inner(area);
+    frame.render_widget(outer, area);
+
+    let [top, mid, hint] = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Fill(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+
+    let active = Style::new().fg(Color::Green);
+    let idle = Style::new().fg(Color::DarkGray);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(summary.to_string(), Style::new().fg(Color::White)),
+            Span::styled(if on_body { "" } else { "▏" }, active),
+        ]))
+        .block(
+            Block::bordered()
+                .title("summary")
+                .border_style(if on_body { idle } else { active }),
+        ),
+        top,
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(body.to_string(), Style::new().fg(Color::White)),
+            Span::styled(if on_body { "▏" } else { "" }, active),
+        ]))
+        .wrap(Wrap { trim: false })
+        .block(
+            Block::bordered()
+                .title("body (optional)")
+                .border_style(if on_body { active } else { idle }),
+        ),
+        mid,
+    );
+    let keys: Hints = if on_body {
+        &[("enter", "new line"), ("tab", "summary"), ("esc", "cancel")]
+    } else {
+        &[("enter", "commit"), ("tab", "body"), ("esc", "cancel")]
+    };
+    frame.render_widget(hint_line(&[keys]), hint);
 }
 
 // Key hints for each pane. The bar shows them when there is no message.
@@ -118,6 +187,8 @@ fn render_bar(frame: &mut Frame, area: Rect, app: &App) {
             ("esc", "cancel"),
         ]]),
         Mode::Help => Line::styled("press any key to close the help", Style::new().fg(Color::Cyan)),
+        // The commit window draws its own key hints.
+        Mode::CommitMsg { .. } => Line::default(),
         // A stopped rebase takes over three keys.
         Mode::Normal if app.rebase.is_some() => {
             let r = app.rebase.as_ref().unwrap();
@@ -162,7 +233,7 @@ const HELP: &[(&str, Hints)] = &[
             ("space", "stage or unstage the file or the directory"),
             ("a", "stage all files"),
             ("enter", "open the hunks, or fold the directory"),
-            ("c / C", "commit here, or commit in the editor"),
+            ("c / C", "open the commit window, or use the editor"),
             ("s", "put the changes in a stash"),
             ("o / t", "take ours or theirs in a conflict"),
         ],
@@ -173,6 +244,15 @@ const HELP: &[(&str, Hints)] = &[
             ("enter", "check out the branch"),
             ("n / d", "make a new branch, or delete this one"),
             ("P / p / f", "push, pull, or fetch"),
+            ("● ↑ ↓", "current branch, to push, to pull"),
+        ],
+    ),
+    (
+        "Commit window",
+        &[
+            ("enter", "commit, or make a new line in the body"),
+            ("tab", "move between the summary and the body"),
+            ("esc", "cancel"),
         ],
     ),
     (

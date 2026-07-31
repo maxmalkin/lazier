@@ -20,6 +20,15 @@ pub struct FileEntry {
     pub path: String,
 }
 
+pub struct BranchEntry {
+    pub name: String,
+    pub current: bool,
+    pub ahead: u32,
+    pub behind: u32,
+    /// The upstream branch is not there any more.
+    pub gone: bool,
+}
+
 // Keep this struct small. The list can hold more than one million entries.
 // The short id is inline. Box<str> fields save the capacity word of String.
 pub struct CommitEntry {
@@ -65,7 +74,7 @@ pub enum DiffTarget {
 
 pub enum Resp {
     Status(Vec<FileEntry>),
-    Branches { current: Option<String>, names: Vec<String> },
+    Branches { current: Option<String>, entries: Vec<BranchEntry> },
     Stashes(Vec<String>),
     LogChunk { entries: Vec<CommitEntry>, done: bool },
     Diff { seq: u64, text: String },
@@ -130,7 +139,10 @@ pub fn spawn(event_tx: Sender<Msg>) -> anyhow::Result<Git> {
                     });
                     None
                 }
-                Req::Branches => read::branches(&repo),
+                Req::Branches => Some(Resp::Branches {
+                    current: read::head_name(&repo),
+                    entries: branches(&worker_root),
+                }),
                 Req::Stashes => read::stashes(&repo),
                 Req::Diff { seq, target } => Some(Resp::Diff { seq, text: display_diff(&worker_root, &target) }),
                 Req::Write(args) => Some(run_git(&worker_root, &args)),
@@ -186,6 +198,46 @@ fn apply_patch(root: &PathBuf, patch: &str, reverse: bool) -> Resp {
             }
         }
         Err(e) => Resp::WriteDone { ok: false, msg: e.to_string() },
+    }
+}
+
+/// List the local branches, the newest commit first. One call gives the
+/// order, the current branch, and the distance to each upstream branch.
+fn branches(root: &PathBuf) -> Vec<BranchEntry> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args([
+            "for-each-ref",
+            "--sort=-committerdate",
+            "--format=%(refname:short)\t%(HEAD)\t%(upstream:track)",
+            "refs/heads/",
+        ])
+        .output();
+    let Ok(out) = out else { return Vec::new() };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split('\t');
+            let name = parts.next()?.to_string();
+            let current = parts.next() == Some("*");
+            // The track field looks like "[ahead 2, behind 1]" or "[gone]".
+            let track = parts.next().unwrap_or("");
+            Some(BranchEntry {
+                name,
+                current,
+                ahead: track_count(track, "ahead "),
+                behind: track_count(track, "behind "),
+                gone: track.contains("gone"),
+            })
+        })
+        .collect()
+}
+
+fn track_count(track: &str, word: &str) -> u32 {
+    match track.split_once(word) {
+        Some((_, rest)) => rest.trim_start().split(|c: char| !c.is_ascii_digit()).next().unwrap_or("").parse().unwrap_or(0),
+        None => 0,
     }
 }
 

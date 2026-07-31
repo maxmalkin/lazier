@@ -6,7 +6,7 @@ use ratatui::widgets::{Block, Paragraph, Wrap};
 
 use super::list;
 use crate::app::{App, PANELS};
-use crate::git::CommitEntry;
+use crate::git::{BranchEntry, CommitEntry};
 use crate::git::rebase::{TodoAction, TodoItem};
 
 fn mark_color(mark: char) -> Color {
@@ -68,6 +68,30 @@ fn ymd(secs: u32) -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
+// A branch row: a mark for the current branch, then the name, then the
+// number of commits to push and to pull.
+fn branch_line(b: &BranchEntry) -> Line<'static> {
+    let (icon, name_style) = if b.current {
+        ("●", Style::new().fg(Color::Green).add_modifier(Modifier::BOLD))
+    } else {
+        (" ", Style::new())
+    };
+    let mut spans = vec![
+        Span::styled(icon, Style::new().fg(Color::Green)),
+        Span::styled(format!(" {}", b.name), name_style),
+    ];
+    if b.ahead > 0 {
+        spans.push(Span::styled(format!(" ↑{}", b.ahead), Style::new().fg(Color::Yellow)));
+    }
+    if b.behind > 0 {
+        spans.push(Span::styled(format!(" ↓{}", b.behind), Style::new().fg(Color::Magenta)));
+    }
+    if b.gone {
+        spans.push(Span::styled(" (gone)", Style::new().fg(Color::Red)));
+    }
+    Line::from(spans)
+}
+
 // A tree row: a folded or open directory, or a file with its mark.
 fn tree_line(app: &App, i: usize) -> Line<'static> {
     let row = &app.tree[i];
@@ -119,14 +143,7 @@ pub fn render_left(frame: &mut Frame, areas: [Rect; 5], app: &App) {
             ),
         },
         &|i| tree_line(app, i),
-        &|i| {
-            let name = &repo.branches[i];
-            if Some(name) == repo.head.as_ref() {
-                Line::styled(format!("* {name}"), Style::new().fg(Color::Green).add_modifier(Modifier::BOLD))
-            } else {
-                Line::from(format!("  {name}"))
-            }
-        },
+        &|i| branch_line(&repo.branches[i]),
         &|i| {
             let c = &repo.commits[i];
             commit_line(c, false, repo.unpushed.contains(c.id_str()))

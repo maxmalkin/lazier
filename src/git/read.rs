@@ -74,18 +74,9 @@ fn worktree_mark(item: &gix::status::index_worktree::Item) -> char {
     }
 }
 
-pub fn branches(repo: &gix::Repository) -> Option<Resp> {
-    let current = repo.head_name().ok().flatten().map(|n| n.shorten().to_string());
-    let mut names = Vec::new();
-    if let Ok(platform) = repo.references()
-        && let Ok(iter) = platform.local_branches()
-    {
-        for r in iter.filter_map(Result::ok) {
-            names.push(r.name().shorten().to_string());
-        }
-    }
-    names.sort();
-    Some(Resp::Branches { current, names })
+/// The name of the branch at HEAD. A detached HEAD gives None.
+pub fn head_name(repo: &gix::Repository) -> Option<String> {
+    repo.head_name().ok().flatten().map(|n| n.shorten().to_string())
 }
 
 pub fn stashes(repo: &gix::Repository) -> Option<Resp> {

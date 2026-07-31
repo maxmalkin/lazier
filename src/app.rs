@@ -13,7 +13,7 @@ use std::collections::HashSet;
 
 use crate::event::{self, Msg};
 use crate::git::rebase::{self, RebaseInfo, TodoAction, TodoItem};
-use crate::git::{self, CommitEntry, DiffTarget, FileEntry, Git, Req, Resp, patch};
+use crate::git::{self, BranchEntry, CommitEntry, DiffTarget, FileEntry, Git, Req, Resp, patch};
 use crate::keys::{Action, action_for};
 use crate::tree::{self, TreeRow};
 use crate::ui;
@@ -27,7 +27,7 @@ const LOG_CHUNK: usize = 100;
 pub struct RepoState {
     pub head: Option<String>,
     pub files: Vec<FileEntry>,
-    pub branches: Vec<String>,
+    pub branches: Vec<BranchEntry>,
     pub commits: Vec<CommitEntry>,
     pub stashes: Vec<String>,
     pub log_done: bool,
@@ -39,7 +39,6 @@ pub struct RepoState {
 }
 
 pub enum InputPurpose {
-    CommitMsg,
     NewBranch,
     StashMsg,
 }
@@ -55,6 +54,8 @@ pub enum Mode {
     Confirm { prompt: String, action: ConfirmAction },
     Hunks { path: String, header: String, hunks: Vec<String>, cursor: usize },
     Help,
+    /// The commit message window. It has a summary line and a body.
+    CommitMsg { summary: String, body: String, on_body: bool },
     /// The todo list editor of an interactive rebase. `base` is the commit
     /// that the rebase starts from. None means the rebase starts at the root.
     Rebase { items: Vec<TodoItem>, cursor: usize, base: Option<String> },
@@ -203,6 +204,31 @@ impl App {
                 }
             }
             Mode::Help => self.mode = Mode::Normal,
+            Mode::CommitMsg { summary, body, on_body } => match key.code {
+                KeyCode::Esc => self.mode = Mode::Normal,
+                // Tab moves between the summary line and the body.
+                KeyCode::Tab | KeyCode::BackTab => *on_body = !*on_body,
+                KeyCode::Down if !*on_body => *on_body = true,
+                KeyCode::Up if *on_body => *on_body = false,
+                KeyCode::Backspace => {
+                    if *on_body { body.pop() } else { summary.pop() };
+                }
+                // The enter key makes a new line in the body. In the summary
+                // line it sends the commit.
+                KeyCode::Enter if *on_body => body.push('\n'),
+                KeyCode::Enter => {
+                    let Mode::CommitMsg { summary, body, .. } =
+                        std::mem::replace(&mut self.mode, Mode::Normal)
+                    else {
+                        return;
+                    };
+                    self.submit_commit(summary, body);
+                }
+                KeyCode::Char(c) => {
+                    if *on_body { body.push(c) } else { summary.push(c) }
+                }
+                _ => {}
+            },
             Mode::Rebase { items, cursor, .. } => match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => self.mode = Mode::Normal,
                 KeyCode::Char('j') | KeyCode::Down => *cursor = (*cursor + 1).min(items.len() - 1),
@@ -286,10 +312,25 @@ impl App {
             return;
         }
         let args: Vec<String> = match purpose {
-            InputPurpose::CommitMsg => svec(&["commit", "-m", &buffer]),
             InputPurpose::NewBranch => svec(&["checkout", "-b", &buffer]),
             InputPurpose::StashMsg => svec(&["stash", "push", "-m", &buffer]),
         };
+        self.write(args);
+    }
+
+    /// Commit with the summary and the body. Git puts an empty line between
+    /// two message parts, thus the body becomes a real commit body.
+    fn submit_commit(&mut self, summary: String, body: String) {
+        if summary.is_empty() {
+            self.message = "the summary must have text".into();
+            self.message_ok = false;
+            return;
+        }
+        let mut args = svec(&["commit", "-m", &summary]);
+        if !body.trim().is_empty() {
+            args.push("-m".into());
+            args.push(body);
+        }
         self.write(args);
     }
 
@@ -449,7 +490,8 @@ impl App {
             }
             Action::StageAll => self.write(svec(&["add", "-A"])),
             Action::CommitPrompt => {
-                self.mode = Mode::Input { prompt: "commit message", buffer: String::new(), purpose: InputPurpose::CommitMsg };
+                self.mode =
+                    Mode::CommitMsg { summary: String::new(), body: String::new(), on_body: false };
             }
             Action::CommitEditor => self.suspend(svec(&["commit"])),
             Action::StashPrompt => {
@@ -489,8 +531,8 @@ impl App {
             }
 
             Action::Checkout => {
-                if let Some(name) = self.repo.branches.get(self.selected[2]) {
-                    let name = name.clone();
+                if let Some(b) = self.repo.branches.get(self.selected[2]) {
+                    let name = b.name.clone();
                     self.write(svec(&["checkout", &name]));
                 }
             }
@@ -498,10 +540,10 @@ impl App {
                 self.mode = Mode::Input { prompt: "new branch name", buffer: String::new(), purpose: InputPurpose::NewBranch };
             }
             Action::DeleteBranch => {
-                if let Some(name) = self.repo.branches.get(self.selected[2]) {
+                if let Some(b) = self.repo.branches.get(self.selected[2]) {
                     self.mode = Mode::Confirm {
-                        prompt: format!("delete branch {name}? y/n"),
-                        action: ConfirmAction::DeleteBranch(name.clone()),
+                        prompt: format!("delete branch {}? y/n", b.name),
+                        action: ConfirmAction::DeleteBranch(b.name.clone()),
                     };
                 }
             }
@@ -545,9 +587,9 @@ impl App {
                 self.repo.files = files;
                 self.rebuild_tree();
             }
-            Resp::Branches { current, names } => {
+            Resp::Branches { current, entries } => {
                 self.repo.head = current;
-                self.repo.branches = names;
+                self.repo.branches = entries;
                 self.clamp(2);
             }
             Resp::Stashes(stashes) => {
@@ -658,7 +700,16 @@ mod tests {
             .map(|(mark, staged, path)| FileEntry { mark, staged, path: path.into() })
             .collect();
         app.repo.unpushed = ["0a0c000".to_string(), "0a0c001".to_string()].into();
-        app.repo.branches = vec!["feature/ui".into(), "main".into()];
+        app.repo.branches = [("main", true, 2, 0), ("feature/ui", false, 1, 3), ("old/thing", false, 0, 0)]
+            .into_iter()
+            .map(|(name, current, ahead, behind)| BranchEntry {
+                name: name.into(),
+                current,
+                ahead,
+                behind,
+                gone: false,
+            })
+            .collect();
         app.repo.stashes = vec!["stash@{0}: WIP on main".into()];
         app.repo.commits = (0..100_000)
             .map(|i| {
@@ -736,6 +787,26 @@ mod tests {
     }
 
     #[test]
+    fn commit_window() {
+        let mut app = demo();
+        app.mode = Mode::CommitMsg {
+            summary: "feat: add the commit window".into(),
+            body: "The window has a summary line and a body.".into(),
+            on_body: true,
+        };
+        insta::assert_snapshot!(draw(&app, 100, 30).backend());
+    }
+
+    #[test]
+    fn empty_summary_is_refused() {
+        let mut app = demo();
+        app.submit_commit(String::new(), "body only".into());
+        assert!(!app.message_ok);
+        // Nothing went to git.
+        assert!(app.cmd_log.is_empty());
+    }
+
+    #[test]
     fn help_overlay() {
         let mut app = demo();
         app.mode = Mode::Help;
@@ -751,9 +822,14 @@ mod tests {
     }
 
     #[test]
-    fn commit_prompt() {
+    fn branch_prompt() {
         let mut app = demo();
-        app.mode = Mode::Input { prompt: "commit message", buffer: "feat: x".into(), purpose: InputPurpose::CommitMsg };
+        app.focus = 2;
+        app.mode = Mode::Input {
+            prompt: "new branch name",
+            buffer: "feature/x".into(),
+            purpose: InputPurpose::NewBranch,
+        };
         insta::assert_snapshot!(draw(&app, 80, 24).backend());
     }
 
