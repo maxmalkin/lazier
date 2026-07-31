@@ -932,7 +932,7 @@ impl App {
                 // A checkout of the branch you are on does nothing, but it
                 // still reads every file. Do not run it.
                 if b.current {
-                    self.message = format!("you are on {}", b.name);
+                    self.message = format!("you are already on {}", b.name);
                     self.message_ok = true;
                     return;
                 }
@@ -1617,7 +1617,7 @@ mod tests {
         assert!(app.repo.branches[0].current);
         app.apply(Action::Checkout);
         assert!(app.running.is_empty());
-        assert!(app.message.contains("you are on"), "{}", app.message);
+        assert!(app.message.contains("you are already on"), "{}", app.message);
         assert!(app.message_ok, "this is not an error");
     }
 
