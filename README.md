@@ -26,10 +26,9 @@ credential helper, and your GPG key continue to work.
 
 ## Speed and memory
 
-Apple Silicon, macOS, git 2.50.1. lazygit 0.61.1, gitui 0.28.1, lazier
-0.1.0. Each program
-starts in a real terminal of 80 by 24, draws its first screen, then quits.
-Less is better in each column.
+Apple Silicon, macOS, git 2.50.1. lazygit 0.61.1, gitui 0.28.1, lazier 0.1.0.
+Each program starts in a real terminal of 80 by 24, draws its first screen,
+then quits. Less is better in each column.
 
 **A repository with 10 000 changed files**
 
