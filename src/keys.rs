@@ -14,6 +14,8 @@ pub enum Action {
     DiffScroll(i32),
     Refresh,
     ZoomGraph,
+    Help,
+    ToggleLog,
     // Files panel
     ToggleStage,
     StageAll,
@@ -47,6 +49,10 @@ pub fn action_for(key: KeyEvent, focus: usize) -> Option<Action> {
         KeyCode::Tab => Some(Action::NextPanel),
         KeyCode::BackTab => Some(Action::PrevPanel),
         KeyCode::Char(c @ '1'..='5') => Some(Action::FocusPanel(c as usize - '1' as usize)),
+        // The zero key focuses the diff pane.
+        KeyCode::Char('0') => Some(Action::FocusPanel(5)),
+        KeyCode::Char('?') => Some(Action::Help),
+        KeyCode::Char('@') => Some(Action::ToggleLog),
         KeyCode::Char('j') | KeyCode::Down => Some(Action::Down),
         KeyCode::Char('k') | KeyCode::Up => Some(Action::Up),
         KeyCode::PageDown => Some(Action::PageDown),

@@ -9,9 +9,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 
+use std::collections::HashSet;
+
 use crate::event::{self, Msg};
 use crate::git::{self, CommitEntry, DiffTarget, FileEntry, Git, Req, Resp, patch};
 use crate::keys::{Action, action_for};
+use crate::tree::{self, TreeRow};
 use crate::ui;
 
 pub const PANELS: [&str; 5] = ["Status", "Files", "Branches", "Commits", "Stash"];
@@ -28,6 +31,10 @@ pub struct RepoState {
     pub stashes: Vec<String>,
     pub log_done: bool,
     pub diff: String,
+    pub ahead: u32,
+    pub behind: u32,
+    /// Short ids of commits that the upstream branch does not have.
+    pub unpushed: HashSet<String>,
 }
 
 pub enum InputPurpose {
@@ -46,11 +53,13 @@ pub enum Mode {
     Input { prompt: &'static str, buffer: String, purpose: InputPurpose },
     Confirm { prompt: String, action: ConfirmAction },
     Hunks { path: String, header: String, hunks: Vec<String>, cursor: usize },
+    Help,
 }
 
 pub struct App {
+    /// Focus 0 to 4 is a left panel. Focus 5 is the diff pane.
     pub focus: usize,
-    pub selected: [usize; 5],
+    pub selected: [usize; 6],
     pub quit: bool,
     pub repo: RepoState,
     pub mode: Mode,
@@ -58,6 +67,10 @@ pub struct App {
     pub message_ok: bool,
     pub zoom: bool,
     pub diff_scroll: u16,
+    pub tree: Vec<TreeRow>,
+    pub collapsed: HashSet<String>,
+    pub cmd_log: Vec<(bool, String)>,
+    pub show_log: bool,
     git: Option<Git>,
     log_inflight: bool,
     diff_seq: u64,
@@ -70,7 +83,7 @@ impl App {
     pub fn new() -> Self {
         Self {
             focus: 1,
-            selected: [0; 5],
+            selected: [0; 6],
             quit: false,
             repo: RepoState::default(),
             mode: Mode::Normal,
@@ -78,6 +91,10 @@ impl App {
             message_ok: true,
             zoom: false,
             diff_scroll: 0,
+            tree: Vec::new(),
+            collapsed: HashSet::new(),
+            cmd_log: Vec::new(),
+            show_log: true,
             git: None,
             log_inflight: false,
             diff_seq: 0,
@@ -150,10 +167,14 @@ impl App {
     fn handle_key(&mut self, key: ratatui::crossterm::event::KeyEvent) {
         match &mut self.mode {
             Mode::Normal => {
+                // A key press removes the old message. The bar then shows
+                // the key hints again.
+                self.message.clear();
                 if let Some(action) = action_for(key, self.focus) {
                     self.apply(action);
                 }
             }
+            Mode::Help => self.mode = Mode::Normal,
             Mode::Input { buffer, .. } => match key.code {
                 KeyCode::Esc => self.mode = Mode::Normal,
                 KeyCode::Backspace => {
@@ -212,15 +233,24 @@ impl App {
     }
 
     fn write(&mut self, args: Vec<String>) {
+        self.log_cmd(true, format!("→ git {}", args.join(" ")));
         if let Some(git) = &self.git {
             git.send(Req::Write(args));
+        }
+    }
+
+    fn log_cmd(&mut self, ok: bool, line: String) {
+        self.cmd_log.push((ok, line));
+        // Keep the log short. Old entries have no value.
+        if self.cmd_log.len() > 100 {
+            self.cmd_log.remove(0);
         }
     }
 
     pub fn panel_len(&self, panel: usize) -> usize {
         match panel {
             0 => 1,
-            1 => self.repo.files.len(),
+            1 => self.tree.len(),
             2 => self.repo.branches.len(),
             3 => self.repo.commits.len(),
             4 => self.repo.stashes.len(),
@@ -228,16 +258,31 @@ impl App {
         }
     }
 
+    fn selected_row(&self) -> Option<&TreeRow> {
+        self.tree.get(self.selected[1])
+    }
+
     fn selected_file(&self) -> Option<&FileEntry> {
-        self.repo.files.get(self.selected[1])
+        self.selected_row().and_then(|r| r.file).and_then(|i| self.repo.files.get(i))
+    }
+
+    fn rebuild_tree(&mut self) {
+        self.tree = tree::build(&self.repo.files, &self.collapsed);
+        self.clamp(1);
     }
 
     fn apply(&mut self, action: Action) {
         match action {
             Action::Quit => self.quit = true,
-            Action::NextPanel => self.focus = (self.focus + 1) % PANELS.len(),
-            Action::PrevPanel => self.focus = (self.focus + PANELS.len() - 1) % PANELS.len(),
+            Action::NextPanel => self.focus = (self.focus + 1) % 6,
+            Action::PrevPanel => self.focus = (self.focus + 5) % 6,
             Action::FocusPanel(i) => self.focus = i,
+            // In the diff pane, the motion keys scroll the text.
+            Action::Down if self.focus == 5 => self.diff_scroll = self.diff_scroll.saturating_add(1),
+            Action::Up if self.focus == 5 => self.diff_scroll = self.diff_scroll.saturating_sub(1),
+            Action::PageDown if self.focus == 5 => self.diff_scroll = self.diff_scroll.saturating_add(15),
+            Action::PageUp if self.focus == 5 => self.diff_scroll = self.diff_scroll.saturating_sub(15),
+            Action::Top if self.focus == 5 => self.diff_scroll = 0,
             Action::Down => {
                 let len = self.panel_len(self.focus);
                 let sel = &mut self.selected[self.focus];
@@ -268,10 +313,15 @@ impl App {
                 self.diff_scroll = self.diff_scroll.saturating_add_signed(delta as i16);
             }
             Action::ZoomGraph => self.zoom = !self.zoom,
+            Action::Help => self.mode = Mode::Help,
+            Action::ToggleLog => self.show_log = !self.show_log,
             Action::Refresh => self.refresh_all(),
 
             Action::ToggleStage => {
-                if let Some(f) = self.selected_file() {
+                // On a directory row, stage the whole directory.
+                if let Some(dir) = self.selected_row().and_then(|r| r.dir.clone()) {
+                    self.write(svec(&["add", "--", &dir]));
+                } else if let Some(f) = self.selected_file() {
                     let args = if f.staged {
                         svec(&["restore", "--staged", "--", &f.path])
                     } else {
@@ -289,6 +339,14 @@ impl App {
                 self.mode = Mode::Input { prompt: "stash message", buffer: String::new(), purpose: InputPurpose::StashMsg };
             }
             Action::EnterHunks => {
+                // On a directory row, the enter key folds or unfolds it.
+                if let Some(dir) = self.selected_row().and_then(|r| r.dir.clone()) {
+                    if !self.collapsed.remove(&dir) {
+                        self.collapsed.insert(dir);
+                    }
+                    self.rebuild_tree();
+                    return;
+                }
                 let Some(f) = self.selected_file() else { return };
                 // The diff pane must already show this file. The diff text
                 // is index-to-worktree, thus the hunks fit `apply --cached`.
@@ -362,7 +420,7 @@ impl App {
         match resp {
             Resp::Status(files) => {
                 self.repo.files = files;
-                self.clamp(1);
+                self.rebuild_tree();
             }
             Resp::Branches { current, names } => {
                 self.repo.head = current;
@@ -387,11 +445,17 @@ impl App {
                 }
             }
             Resp::WriteDone { ok, msg } => {
-                self.message = msg;
+                self.message = msg.clone();
                 self.message_ok = ok;
+                self.log_cmd(ok, msg);
                 if ok {
                     self.refresh_all();
                 }
+            }
+            Resp::Sync { ahead, behind, unpushed } => {
+                self.repo.ahead = ahead;
+                self.repo.behind = behind;
+                self.repo.unpushed = unpushed;
             }
         }
     }
@@ -405,7 +469,7 @@ impl App {
     // again. The refresh is idempotent and the watcher batches events.
     fn refresh_all(&mut self) {
         let Some(git) = &self.git else { return };
-        for req in [Req::Status, Req::Branches, Req::Stashes] {
+        for req in [Req::Status, Req::Branches, Req::Stashes, Req::Sync] {
             git.send(req);
         }
         self.repo.commits.clear();
@@ -458,10 +522,12 @@ mod tests {
     fn demo() -> App {
         let mut app = App::new();
         app.repo.head = Some("main".into());
+        app.repo.ahead = 2;
         app.repo.files = [('M', true, "src/main.rs"), ('A', false, "src/app.rs"), ('?', false, "notes.txt")]
             .into_iter()
             .map(|(mark, staged, path)| FileEntry { mark, staged, path: path.into() })
             .collect();
+        app.repo.unpushed = ["0a0c000".to_string(), "0a0c001".to_string()].into();
         app.repo.branches = vec!["feature/ui".into(), "main".into()];
         app.repo.stashes = vec!["stash@{0}: WIP on main".into()];
         app.repo.commits = (0..100_000)
@@ -479,6 +545,7 @@ mod tests {
             })
             .collect();
         app.repo.diff = "diff --git a/src/main.rs b/src/main.rs\n+added line\n-removed line".into();
+        app.rebuild_tree();
         app
     }
 
@@ -509,6 +576,13 @@ mod tests {
     }
 
     #[test]
+    fn help_overlay() {
+        let mut app = demo();
+        app.mode = Mode::Help;
+        insta::assert_snapshot!(draw(&app, 100, 30).backend());
+    }
+
+    #[test]
     fn zoomed_graph() {
         let mut app = demo();
         app.focus = 3;
@@ -534,9 +608,11 @@ mod tests {
         app.apply(Action::FocusPanel(3));
         assert_eq!(app.focus, 3);
         app.apply(Action::NextPanel);
-        app.apply(Action::NextPanel); // The focus goes from panel 4 to panel 0.
+        app.apply(Action::NextPanel); // The focus reaches the diff pane.
+        assert_eq!(app.focus, 5);
+        app.apply(Action::NextPanel); // The focus wraps to panel 0.
         assert_eq!(app.focus, 0);
         app.apply(Action::PrevPanel);
-        assert_eq!(app.focus, 4);
+        assert_eq!(app.focus, 5);
     }
 }

@@ -6,7 +6,7 @@ use ratatui::widgets::{Block, Paragraph};
 
 use super::list;
 use crate::app::{App, PANELS};
-use crate::git::{CommitEntry, FileEntry};
+use crate::git::CommitEntry;
 
 fn mark_color(mark: char) -> Color {
     match mark {
@@ -20,20 +20,6 @@ fn mark_color(mark: char) -> Color {
     }
 }
 
-// Staged entries are green, work-tree entries red, like lazygit.
-fn file_line(f: &FileEntry) -> Line<'static> {
-    let path_color = if f.staged { Color::Green } else { Color::Red };
-    let stage = if f.staged {
-        Span::styled("S", Style::new().fg(Color::Green).add_modifier(Modifier::BOLD))
-    } else {
-        Span::raw(" ")
-    };
-    Line::from(vec![
-        stage,
-        Span::styled(f.mark.to_string(), Style::new().fg(mark_color(f.mark))),
-        Span::styled(format!(" {}", f.path), Style::new().fg(path_color)),
-    ])
-}
 
 // One color for each graph lane. The palette repeats after six lanes.
 const LANE_COLORS: [Color; 6] =
@@ -49,10 +35,15 @@ fn graph_spans(graph: &str) -> Vec<Span<'static>> {
         .collect()
 }
 
-fn commit_line(c: &CommitEntry, zoomed: bool) -> Line<'static> {
+fn commit_line(c: &CommitEntry, zoomed: bool, unpushed: bool) -> Line<'static> {
     let mut spans = graph_spans(&c.graph);
-    spans.push(Span::raw(" "));
-    spans.push(Span::styled(c.id_str().to_string(), Style::new().fg(Color::DarkGray)));
+    // An up arrow marks a commit that the upstream branch does not have.
+    if unpushed {
+        spans.push(Span::styled(" ↑", Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+    } else {
+        spans.push(Span::raw(" "));
+    }
+    spans.push(Span::styled(format!(" {}", c.id_str()), Style::new().fg(Color::DarkGray)));
     if zoomed {
         spans.push(Span::styled(format!(" {}", ymd(c.time)), Style::new().fg(Color::DarkGray)));
         spans.push(Span::styled(format!(" {:<16.16}", &*c.author), Style::new().fg(Color::Blue)));
@@ -76,12 +67,44 @@ fn ymd(secs: u32) -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
+// A tree row: a folded or open directory, or a file with its mark.
+fn tree_line(app: &App, i: usize) -> Line<'static> {
+    let row = &app.tree[i];
+    let pad = "  ".repeat(row.depth as usize);
+    if let Some(dir) = &row.dir {
+        let arrow = if app.collapsed.contains(dir) { '▸' } else { '▾' };
+        return Line::styled(
+            format!("  {pad}{arrow} {}/", row.name),
+            Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        );
+    }
+    let f = &app.repo.files[row.file.unwrap_or(0)];
+    let path_color = if f.staged { Color::Green } else { Color::Red };
+    let stage = if f.staged {
+        Span::styled("S", Style::new().fg(Color::Green).add_modifier(Modifier::BOLD))
+    } else {
+        Span::raw(" ")
+    };
+    Line::from(vec![
+        stage,
+        Span::styled(f.mark.to_string(), Style::new().fg(mark_color(f.mark))),
+        Span::styled(format!(" {pad}{}", row.name), Style::new().fg(path_color)),
+    ])
+}
+
 pub fn render_left(frame: &mut Frame, areas: [Rect; 5], app: &App) {
     let repo = &app.repo;
-    let head = repo.head.clone().unwrap_or_else(|| "(no repo)".into());
+    let mut head = repo.head.clone().unwrap_or_else(|| "(no repo)".into());
+    // Show how far the branch is from its upstream.
+    if repo.ahead > 0 {
+        head.push_str(&format!(" ↑{}", repo.ahead));
+    }
+    if repo.behind > 0 {
+        head.push_str(&format!(" ↓{}", repo.behind));
+    }
     let rows: [&dyn Fn(usize) -> Line<'static>; 5] = [
         &|_| Line::styled(head.clone(), Style::new().fg(Color::Green).add_modifier(Modifier::BOLD)),
-        &|i| file_line(&repo.files[i]),
+        &|i| tree_line(app, i),
         &|i| {
             let name = &repo.branches[i];
             if Some(name) == repo.head.as_ref() {
@@ -90,7 +113,10 @@ pub fn render_left(frame: &mut Frame, areas: [Rect; 5], app: &App) {
                 Line::from(format!("  {name}"))
             }
         },
-        &|i| commit_line(&repo.commits[i], false),
+        &|i| {
+            let c = &repo.commits[i];
+            commit_line(c, false, repo.unpushed.contains(c.id_str()))
+        },
         &|i| {
             // Color the stash name before the colon.
             let s = &repo.stashes[i];
@@ -103,8 +129,10 @@ pub fn render_left(frame: &mut Frame, areas: [Rect; 5], app: &App) {
             }
         },
     ];
+    // Each title carries the key that focuses the panel.
     for (i, area) in areas.into_iter().enumerate() {
-        list::render(frame, area, PANELS[i], app.focus == i, app.selected[i], app.panel_len(i), rows[i]);
+        let title = format!("[{}] {}", i + 1, PANELS[i]);
+        list::render(frame, area, &title, app.focus == i, app.selected[i], app.panel_len(i), rows[i]);
     }
 }
 
@@ -119,7 +147,10 @@ pub fn render_zoom(frame: &mut Frame, area: Rect, app: &App) {
         true,
         app.selected[3],
         app.panel_len(3),
-        &|i| commit_line(&repo.commits[i], true),
+        &|i| {
+            let c = &repo.commits[i];
+            commit_line(c, true, repo.unpushed.contains(c.id_str()))
+        },
     );
 }
 
@@ -129,8 +160,9 @@ pub fn render_main(frame: &mut Frame, area: Rect, app: &App) {
         crate::app::Mode::Hunks { path, hunks, cursor, .. } => {
             (format!("Stage hunks — {path}"), hunks[*cursor].as_str())
         }
-        _ => ("Diff — J/K: scroll".into(), app.repo.diff.as_str()),
+        _ => ("[0] Diff".into(), app.repo.diff.as_str()),
     };
+    let focused = app.focus == 5;
     let lines: Vec<Line> = text
         .lines()
         .skip(app.diff_scroll as usize)
@@ -153,5 +185,28 @@ pub fn render_main(frame: &mut Frame, area: Rect, app: &App) {
             Line::from(l.to_string()).style(style)
         })
         .collect();
-    frame.render_widget(Paragraph::new(lines).block(Block::bordered().title(title)), area);
+    let border = if focused { Color::Green } else { Color::DarkGray };
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(Block::bordered().title(title).border_style(Style::new().fg(border))),
+        area,
+    );
+}
+
+/// The command log shows the last git commands and their results.
+pub fn render_log(frame: &mut Frame, area: Rect, app: &App) {
+    let take = area.height.saturating_sub(2) as usize;
+    let start = app.cmd_log.len().saturating_sub(take);
+    let lines: Vec<Line> = app.cmd_log[start..]
+        .iter()
+        .map(|(ok, line)| {
+            let color = if *ok { Color::DarkGray } else { Color::Red };
+            Line::styled(line.clone(), Style::new().fg(color))
+        })
+        .collect();
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(Block::bordered().title("[@] Command log").border_style(Style::new().fg(Color::DarkGray))),
+        area,
+    );
 }
