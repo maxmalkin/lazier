@@ -41,8 +41,9 @@ object database, and lazier reads only the parts it must show.
 **Why it is fast.** lazygit starts a `git` process for each read and parses
 the text. lazier reads the repository in its own process with gitoxide.
 Worker threads do all git work, thus the screen never waits. A list shows
-only the rows in view. Writes still go to the `git` command, thus your
-hooks, credential helper, and GPG key continue to work.
+only the rows in view. A refresh keeps the commits that are already in
+memory when HEAD did not move. Writes still go to the `git` command, thus
+your hooks, credential helper, and GPG key continue to work.
 
 ## Install
 
@@ -63,28 +64,47 @@ tar -xzf lazier-<target>.tar.gz && sudo mv lazier /usr/local/bin/
 Windows: unzip `lazier-x86_64-pc-windows-msvc.zip`, then put `lazier.exe` in
 a directory on your `PATH`.
 
+There are programs for macOS, Linux, and Windows, each one for the x86-64
+and the ARM processor.
+
 ## Use
 
 Run `lazier` in a git repository. Press `?` for all keys. The bar at the
 bottom shows the keys for the panel in focus.
 
-| Key | Panel |
-|-----|-------|
+| Key | Goes to |
+|-----|---------|
 | `1` `2` `3` `4` `5` | Status, Files, Branches, Commits, Stash |
 | `0` | Diff |
-| `@` | Command log, with the result and the time of each command |
+| `W` | Worktrees |
+| `@` | Command log: each command, its result, and its time |
 
-Move with `j` and `k`, `ctrl-d` and `ctrl-u`, `g` and `G`.
+Move with `j` and `k`, `ctrl-d` and `ctrl-u`, `g` and `G`. `tab` goes to the
+next panel. `r` reads the repository again.
 
-- **Files.** `space` stage · `a` stage all · `enter` hunks, or fold a
-  directory · `c` commit window · `C` your editor · `s` stash · `o` `t` take
-  ours or theirs
-- **Branches.** `enter` check out · `n` new · `d` `D` delete · `R` rename ·
-  `m` merge · `P` `p` `f` push, pull, fetch
-- **Commits.** `enter` graph view · `i` interactive rebase · `w` reword ·
-  `v` revert · `↑` marks a commit the upstream branch does not have
+These work in every panel: `P` push · `p` pull · `f` fetch · `:` run a shell
+command. Push, pull, and fetch run in the background. The bar shows `⟳` while
+one runs, and the command log holds its output.
+
+- **Files.** `space` stage · `a` stage all · `enter` open the hunks, or fold
+  a directory · `d` discard the changes · `x` delete it · `c` commit window ·
+  `C` your editor · `s` stash · `o` `t` take ours or theirs. The name says
+  the state: green in the index, yellow partly in it, red not in it, dim red
+  for a file git does not track.
+- **Hunks.** `j` `k` move a line · `space` mark it · `enter` stage the marked
+  lines · `a` stage the whole hunk · `J` `K` go to another hunk.
+- **Branches.** `enter` check out · `n` new · `d` delete, `D` by force · `R`
+  rename · `m` merge. The newest branch is first, with `↑` and `↓` counts. A
+  checkout of a branch that another worktree holds offers to go there.
+- **Commits.** `enter` full graph view · `i` interactive rebase · `w` reword
+  · `v` revert · `y` put the changes in the index · `↑` marks a commit the
+  upstream branch does not have.
+- **Bisect.** `b` start one here, or mark a bad commit · `o` mark a good one
+  · `S` skip · `A` end it.
 - **Rebase.** `p` `r` `e` `s` `f` `d` set the action · `J` `K` move a commit
-  · `enter` run. If it stops: `c` continue · `s` skip · `A` abort
+  · `enter` run. If it stops: `c` continue · `s` skip · `A` abort.
+- **Stash.** `enter` or `a` apply · `p` pop · `d` drop.
+- **Worktrees.** `enter` go to one · `n` new · `d` remove.
 
 ## License
 
