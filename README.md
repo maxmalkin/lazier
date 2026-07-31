@@ -100,7 +100,8 @@ one runs, and the command log holds its output.
 - **Hunks.** `j` `k` move a line · `space` mark it · `enter` stage the marked
   lines · `a` stage the whole hunk · `J` `K` go to another hunk.
 - **Branches.** `enter` check out · `n` new · `d` delete, `D` by force · `R`
-  rename · `m` merge. The newest branch is first, with `↑` and `↓` counts. A
+  rename · `m` merge. The newest branch is first, with `↑` and `↓` counts.
+  The branch you are on comes first, and `enter` on it does nothing. A
   checkout of a branch that another worktree holds offers to go there.
 - **Commits.** `enter` full graph view · `i` interactive rebase · `w` reword
   · `v` revert · `y` put the changes in the index · `↑` marks a commit the

@@ -461,7 +461,7 @@ const HELP: &[(&str, Hints)] = &[
     (
         "Branches [3]",
         &[
-            ("enter", "check out the branch"),
+            ("enter", "check out the branch, if you are not on it"),
             ("n", "make a new branch"),
             ("d / D", "delete it, or delete it by force"),
             ("R", "give the branch a new name"),
@@ -512,7 +512,8 @@ const HELP: &[(&str, Hints)] = &[
         &[
             ("W", "open the list"),
             ("enter", "go to that worktree"),
-            ("n / d", "make one, or remove one"),
+            ("n", "make one: it asks for a branch and a path"),
+            ("d / p", "remove one, or drop the records of lost ones"),
         ],
     ),
     ("Stash [5]", &[("enter / a", "apply the stash"), ("p", "pop it"), ("d", "drop it")]),
