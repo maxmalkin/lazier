@@ -294,8 +294,6 @@ impl App {
                 let sel = &mut self.selected[self.focus];
                 *sel = sel.saturating_sub(1);
             }
-            // ponytail: the page step is a constant. The exact panel height
-            // is not worth the plumbing.
             Action::PageDown => {
                 let len = self.panel_len(self.focus);
                 let sel = &mut self.selected[self.focus];
@@ -465,8 +463,6 @@ impl App {
         self.selected[panel] = self.selected[panel].min(len.saturating_sub(1));
     }
 
-    // ponytail: a write triggers this and the fs watcher can trigger it
-    // again. The refresh is idempotent and the watcher batches events.
     fn refresh_all(&mut self) {
         let Some(git) = &self.git else { return };
         for req in [Req::Status, Req::Branches, Req::Stashes, Req::Sync] {

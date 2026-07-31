@@ -98,7 +98,6 @@ impl Git {
 /// Find the repository at the current directory. Start two read workers.
 /// One worker owns the log walker, which must stay alive between requests.
 /// The other worker does all other reads and all writes.
-// ponytail: two threads only. Add a thread pool if the profile shows the need.
 pub fn spawn(event_tx: Sender<Msg>) -> anyhow::Result<Git> {
     let shared = Arc::new(gix::ThreadSafeRepository::discover(".")?);
     let root: PathBuf = shared
@@ -191,8 +190,6 @@ fn apply_patch(root: &PathBuf, patch: &str, reverse: bool) -> Resp {
 
 // Read ahead/behind counts and the set of commits that are not on the
 // upstream branch. No upstream gives zero counts and an empty set.
-// ponytail: two subprocess calls at refresh time. Move to gix when phase 4
-// touches ahead/behind logic again.
 fn sync_state(root: &PathBuf) -> Resp {
     let run = |args: &[&str]| {
         Command::new("git")
@@ -217,8 +214,6 @@ fn sync_state(root: &PathBuf) -> Resp {
     Resp::Sync { ahead, behind, unpushed }
 }
 
-// ponytail: the display diff uses a subprocess. This is not the hot path.
-// Move it to gix blob diffing if the profile shows a cost.
 fn display_diff(root: &PathBuf, target: &DiffTarget) -> String {
     // The worktree diff is index-to-worktree. The hunk staging mode applies
     // these hunks with `apply --cached`, thus the base must be the index.

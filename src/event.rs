@@ -20,8 +20,8 @@ pub enum Msg {
 /// Start the input thread. When `pause` is set, the thread does not read
 /// the terminal. The main loop sets it before it runs a child process that
 /// needs the terminal, for example git push.
-// ponytail: the poll wakes five times each second. The cost is near zero.
-// A blocking read would steal terminal input from child processes.
+// Poll instead of a blocking read. A blocking read would steal terminal
+// input from child processes, for example a git credential prompt.
 pub fn spawn_input(tx: Sender<Msg>, pause: Arc<AtomicBool>) {
     std::thread::spawn(move || {
         loop {

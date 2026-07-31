@@ -1,9 +1,8 @@
 //! Watch the .git directory. Send a refresh message when HEAD, the index,
 //! or a reference changes.
-// ponytail: watch .git only, not the worktree. A recursive worktree watch
-// makes too many file handles on a large repository. The worktree state
-// refreshes after each command and on the r key. Add fsmonitor if that
-// feels stale.
+// Watch .git only, not the worktree. A recursive worktree watch makes too
+// many file handles on a large repository. The worktree state refreshes
+// after each command and on the r key.
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::time::Duration;

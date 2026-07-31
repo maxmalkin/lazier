@@ -25,8 +25,8 @@ if [ ! -d bigdiff ]; then
   echo "bigdiff done"
 fi
 
-# linux: 1.3M commits (log stressor). Blobless partial clone: full history, no file contents.
-# ponytail: blobless clone, not full — log traversal only needs commits/trees. Full clone if diff-on-linux ever matters.
+# linux: 1.3M commits (log stressor). Blobless partial clone: full history,
+# no file contents. The log traversal only needs commits and trees.
 if [ "${1:-}" = "linux" ] && [ ! -d linux ]; then
   git clone --filter=blob:none https://github.com/torvalds/linux.git linux
   echo "linux done"
