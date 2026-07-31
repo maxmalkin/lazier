@@ -12,6 +12,7 @@ use std::sync::mpsc;
 use std::collections::HashSet;
 
 use crate::event::{self, Msg};
+use crate::git::rebase::{self, RebaseInfo, TodoAction, TodoItem};
 use crate::git::{self, CommitEntry, DiffTarget, FileEntry, Git, Req, Resp, patch};
 use crate::keys::{Action, action_for};
 use crate::tree::{self, TreeRow};
@@ -54,6 +55,9 @@ pub enum Mode {
     Confirm { prompt: String, action: ConfirmAction },
     Hunks { path: String, header: String, hunks: Vec<String>, cursor: usize },
     Help,
+    /// The todo list editor of an interactive rebase. `base` is the commit
+    /// that the rebase starts from. None means the rebase starts at the root.
+    Rebase { items: Vec<TodoItem>, cursor: usize, base: Option<String> },
 }
 
 pub struct App {
@@ -71,11 +75,12 @@ pub struct App {
     pub collapsed: HashSet<String>,
     pub cmd_log: Vec<(bool, String)>,
     pub show_log: bool,
+    pub rebase: Option<RebaseInfo>,
     git: Option<Git>,
     log_inflight: bool,
     diff_seq: u64,
     diff_target: Option<DiffTarget>,
-    pending_suspend: Option<Vec<String>>,
+    pending_suspend: Option<(Vec<String>, Vec<(String, String)>)>,
     pause: Arc<AtomicBool>,
 }
 
@@ -95,6 +100,7 @@ impl App {
             collapsed: HashSet::new(),
             cmd_log: Vec::new(),
             show_log: true,
+            rebase: None,
             git: None,
             log_inflight: false,
             diff_seq: 0,
@@ -121,8 +127,8 @@ impl App {
                 self.update(msg);
             }
             self.flush_requests();
-            if let Some(args) = self.pending_suspend.take() {
-                self.suspend_and_run(terminal, args)?;
+            if let Some((args, envs)) = self.pending_suspend.take() {
+                self.suspend_and_run(terminal, args, envs)?;
             }
         }
         Ok(())
@@ -130,7 +136,12 @@ impl App {
 
     /// Give the terminal to a git child process, for example push or an
     /// editor for a commit message. Restore the terminal after it.
-    fn suspend_and_run(&mut self, terminal: &mut DefaultTerminal, args: Vec<String>) -> Result<()> {
+    fn suspend_and_run(
+        &mut self,
+        terminal: &mut DefaultTerminal,
+        args: Vec<String>,
+        envs: Vec<(String, String)>,
+    ) -> Result<()> {
         let Some(git) = &self.git else { return Ok(()) };
         self.pause.store(true, Ordering::Relaxed);
         disable_raw_mode()?;
@@ -139,6 +150,7 @@ impl App {
             .arg("-C")
             .arg(&git.root)
             .args(&args)
+            .envs(envs)
             .status();
         enable_raw_mode()?;
         execute!(std::io::stdout(), EnterAlternateScreen)?;
@@ -150,6 +162,9 @@ impl App {
             Ok(s) => format!("git {} failed ({s})", args.join(" ")),
             Err(e) => e.to_string(),
         };
+        let ok = self.message_ok;
+        let msg = self.message.clone();
+        self.log_cmd(ok, msg);
         self.refresh_all();
         Ok(())
     }
@@ -170,11 +185,54 @@ impl App {
                 // A key press removes the old message. The bar then shows
                 // the key hints again.
                 self.message.clear();
+                // While a rebase is stopped, these keys come first. They
+                // replace the normal meaning of the key.
+                if self.rebase.is_some() {
+                    match key.code {
+                        KeyCode::Char('c') => return self.apply(Action::RebaseContinue),
+                        KeyCode::Char('s') => return self.apply(Action::RebaseSkip),
+                        KeyCode::Char('A') => return self.apply(Action::RebaseAbort),
+                        _ => {}
+                    }
+                }
                 if let Some(action) = action_for(key, self.focus) {
                     self.apply(action);
                 }
             }
             Mode::Help => self.mode = Mode::Normal,
+            Mode::Rebase { items, cursor, .. } => match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => self.mode = Mode::Normal,
+                KeyCode::Char('j') | KeyCode::Down => *cursor = (*cursor + 1).min(items.len() - 1),
+                KeyCode::Char('k') | KeyCode::Up => *cursor = cursor.saturating_sub(1),
+                // Control with j or k moves the commit itself.
+                KeyCode::Char('J') if *cursor + 1 < items.len() => {
+                    items.swap(*cursor, *cursor + 1);
+                    *cursor += 1;
+                }
+                KeyCode::Char('K') if *cursor > 0 => {
+                    items.swap(*cursor, *cursor - 1);
+                    *cursor -= 1;
+                }
+                KeyCode::Char(c @ ('p' | 'r' | 'e' | 's' | 'f' | 'd')) => {
+                    items[*cursor].action = match c {
+                        'p' => TodoAction::Pick,
+                        'r' => TodoAction::Reword,
+                        'e' => TodoAction::Edit,
+                        's' => TodoAction::Squash,
+                        'f' => TodoAction::Fixup,
+                        _ => TodoAction::Drop,
+                    };
+                }
+                KeyCode::Enter => {
+                    let Mode::Rebase { items, base, .. } =
+                        std::mem::replace(&mut self.mode, Mode::Normal)
+                    else {
+                        return;
+                    };
+                    self.run_rebase(items, base);
+                }
+                _ => {}
+            },
             Mode::Input { buffer, .. } => match key.code {
                 KeyCode::Esc => self.mode = Mode::Normal,
                 KeyCode::Backspace => {
@@ -237,6 +295,65 @@ impl App {
         if let Some(git) = &self.git {
             git.send(Req::Write(args));
         }
+    }
+
+    /// Run a git command with the real terminal. Use it for a command that
+    /// asks the user something, for example a password or a commit message.
+    fn suspend(&mut self, args: Vec<String>) {
+        self.log_cmd(true, format!("→ git {}", args.join(" ")));
+        self.pending_suspend = Some((args, Vec::new()));
+    }
+
+    /// Open the todo editor for the commits above the selected one. The
+    /// selected commit is the oldest commit in the list.
+    fn start_rebase(&mut self) {
+        let sel = self.selected[3];
+        let Some(last) = self.repo.commits.get(sel) else { return };
+        // A rebase cannot start below a commit that is not loaded yet.
+        let base = if sel + 1 < self.repo.commits.len() {
+            Some(format!("{}^", last.id_str()))
+        } else if self.repo.log_done {
+            None // The oldest commit is a root commit.
+        } else {
+            self.message = "load more commits first".into();
+            self.message_ok = false;
+            return;
+        };
+        let items = self.repo.commits[..=sel]
+            .iter()
+            .map(|c| TodoItem {
+                action: TodoAction::Pick,
+                id: c.id_str().to_string(),
+                subject: c.subject.to_string(),
+            })
+            .collect();
+        self.mode = Mode::Rebase { items, cursor: 0, base };
+    }
+
+    /// Write the todo list, then run the rebase with the real terminal.
+    /// Git calls this program as the sequence editor, thus git shows no
+    /// editor for the todo list. A reword step still opens the user editor.
+    fn run_rebase(&mut self, items: Vec<TodoItem>, base: Option<String>) {
+        let Some(git) = &self.git else { return };
+        let todo_path = git.git_dir.join("lazier-todo");
+        if let Err(e) = std::fs::write(&todo_path, rebase::serialize(&items)) {
+            self.message = e.to_string();
+            self.message_ok = false;
+            return;
+        }
+        let Ok(exe) = std::env::current_exe() else { return };
+        let editor = format!(
+            "{} --seq-editor {}",
+            rebase::sh_quote(&exe.to_string_lossy()),
+            rebase::sh_quote(&todo_path.to_string_lossy())
+        );
+        let args = match &base {
+            Some(b) => svec(&["rebase", "-i", b]),
+            None => svec(&["rebase", "-i", "--root"]),
+        };
+        self.log_cmd(true, format!("→ git {}", args.join(" ")));
+        self.pending_suspend =
+            Some((args, vec![("GIT_SEQUENCE_EDITOR".into(), editor)]));
     }
 
     fn log_cmd(&mut self, ok: bool, line: String) {
@@ -332,7 +449,7 @@ impl App {
             Action::CommitPrompt => {
                 self.mode = Mode::Input { prompt: "commit message", buffer: String::new(), purpose: InputPurpose::CommitMsg };
             }
-            Action::CommitEditor => self.pending_suspend = Some(svec(&["commit"])),
+            Action::CommitEditor => self.suspend(svec(&["commit"])),
             Action::StashPrompt => {
                 self.mode = Mode::Input { prompt: "stash message", buffer: String::new(), purpose: InputPurpose::StashMsg };
             }
@@ -386,9 +503,15 @@ impl App {
                     };
                 }
             }
-            Action::Push => self.pending_suspend = Some(svec(&["push"])),
-            Action::Pull => self.pending_suspend = Some(svec(&["pull"])),
-            Action::Fetch => self.pending_suspend = Some(svec(&["fetch"])),
+            Action::Push => self.suspend(svec(&["push"])),
+            Action::Pull => self.suspend(svec(&["pull"])),
+            Action::Fetch => self.suspend(svec(&["fetch"])),
+
+            Action::InteractiveRebase => self.start_rebase(),
+            // These three keys work only while a rebase is stopped.
+            Action::RebaseContinue => self.suspend(svec(&["rebase", "--continue"])),
+            Action::RebaseSkip => self.suspend(svec(&["rebase", "--skip"])),
+            Action::RebaseAbort => self.write(svec(&["rebase", "--abort"])),
 
             Action::ApplyStash => {
                 let i = self.selected[4];
@@ -475,6 +598,8 @@ impl App {
         self.log_inflight = true;
         // Force a new diff request for the current selection.
         self.diff_target = None;
+        let dir = self.git.as_ref().map(|g| g.git_dir.clone());
+        self.rebase = dir.as_deref().and_then(rebase::detect);
     }
 
     /// Send the requests that the new state makes necessary. The main loop
@@ -569,6 +694,36 @@ mod tests {
         app.focus = 3;
         app.selected[3] = 99_999;
         insta::assert_snapshot!(draw(&app, 80, 24).backend());
+    }
+
+    #[test]
+    fn rebase_editor() {
+        let mut app = demo();
+        app.focus = 3;
+        app.selected[3] = 3;
+        app.start_rebase();
+        // Give the four commits different actions.
+        if let Mode::Rebase { items, cursor, .. } = &mut app.mode {
+            items[1].action = TodoAction::Squash;
+            items[2].action = TodoAction::Drop;
+            items[3].action = TodoAction::Reword;
+            *cursor = 2;
+        } else {
+            panic!("the rebase editor did not open");
+        }
+        insta::assert_snapshot!(draw(&app, 100, 24).backend());
+    }
+
+    #[test]
+    fn rebase_todo_matches_editor_order() {
+        let mut app = demo();
+        app.selected[3] = 2;
+        app.start_rebase();
+        let Mode::Rebase { items, base, .. } = &app.mode else { panic!("no editor") };
+        // The base is the parent of the oldest commit in the list.
+        assert_eq!(base.as_deref(), Some("0a0c002^"));
+        // The file starts with the oldest commit.
+        assert!(rebase::serialize(items).starts_with("pick 0a0c002"));
     }
 
     #[test]

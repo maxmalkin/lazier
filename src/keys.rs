@@ -16,6 +16,10 @@ pub enum Action {
     ZoomGraph,
     Help,
     ToggleLog,
+    InteractiveRebase,
+    RebaseContinue,
+    RebaseSkip,
+    RebaseAbort,
     // Files panel
     ToggleStage,
     StageAll,
@@ -78,6 +82,7 @@ pub fn action_for(key: KeyEvent, focus: usize) -> Option<Action> {
         (1, KeyCode::Char('o')) => Some(Action::TakeOurs),
         (1, KeyCode::Char('t')) => Some(Action::TakeTheirs),
         (3, KeyCode::Enter) => Some(Action::ZoomGraph),
+        (3, KeyCode::Char('i')) => Some(Action::InteractiveRebase),
         (2, KeyCode::Enter) => Some(Action::Checkout),
         (2, KeyCode::Char('n')) => Some(Action::NewBranchPrompt),
         (2, KeyCode::Char('d')) => Some(Action::DeleteBranch),

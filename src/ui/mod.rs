@@ -3,7 +3,7 @@ mod panels;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Clear, Paragraph};
 
@@ -48,7 +48,7 @@ const HINTS: [&str; 6] = [
     "r refresh",
     "space stage · a all · c commit · C editor · s stash · enter hunks/fold · o/t conflict",
     "enter checkout · n new · d delete · P push · p pull · f fetch",
-    "enter zoom · g/G top/bottom · ctrl-d/u page",
+    "enter zoom · i rebase · g/G top/bottom · ctrl-d/u page",
     "enter/a apply · p pop · d drop",
     "j/k scroll · g top",
 ];
@@ -64,6 +64,18 @@ fn render_bar(frame: &mut Frame, area: Rect, app: &App) {
             Style::new().fg(Color::Magenta),
         ),
         Mode::Help => Line::styled("press any key to close the help", Style::new().fg(Color::Cyan)),
+        Mode::Rebase { .. } => Line::styled(
+            "p pick · r reword · e edit · s squash · f fixup · d drop · J/K move · enter run · esc cancel",
+            Style::new().fg(Color::Magenta),
+        ),
+        // A stopped rebase takes over three keys.
+        Mode::Normal if app.rebase.is_some() => {
+            let r = app.rebase.as_ref().unwrap();
+            Line::styled(
+                format!("REBASE {}/{} — c continue · s skip · A abort", r.step, r.total),
+                Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            )
+        }
         // A failed command shows its message in red.
         Mode::Normal if !app.message.is_empty() => {
             let color = if app.message_ok { Color::Green } else { Color::Red };
@@ -89,7 +101,12 @@ const HELP: &str = "\
  Branches[3] enter checkout  n new branch  d delete
              P push  p pull  f fetch  (these use the real terminal)
 
- Commits [4] enter zoomed graph view  ↑ marks unpushed commits
+ Commits [4] enter zoomed graph view  i interactive rebase from here
+             ↑ marks unpushed commits
+
+ Rebase      p pick  r reword  e edit  s squash  f fixup  d drop
+             J/K move a commit  enter run  esc cancel
+             while stopped: c continue  s skip  A abort
 
  Stash [5]   enter/a apply  p pop  d drop
 

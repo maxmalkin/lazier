@@ -7,6 +7,7 @@ use ratatui::widgets::{Block, Paragraph};
 use super::list;
 use crate::app::{App, PANELS};
 use crate::git::CommitEntry;
+use crate::git::rebase::{TodoAction, TodoItem};
 
 fn mark_color(mark: char) -> Color {
     match mark {
@@ -102,8 +103,21 @@ pub fn render_left(frame: &mut Frame, areas: [Rect; 5], app: &App) {
     if repo.behind > 0 {
         head.push_str(&format!(" ↓{}", repo.behind));
     }
+    // A stopped rebase replaces the branch name with its progress.
+    let banner = app
+        .rebase
+        .as_ref()
+        .map(|r| (format!("REBASE {}/{}", r.step, r.total), Color::Yellow));
     let rows: [&dyn Fn(usize) -> Line<'static>; 5] = [
-        &|_| Line::styled(head.clone(), Style::new().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        &|_| match &banner {
+            Some((text, color)) => {
+                Line::styled(text.clone(), Style::new().fg(*color).add_modifier(Modifier::BOLD))
+            }
+            None => Line::styled(
+                head.clone(),
+                Style::new().fg(Color::Green).add_modifier(Modifier::BOLD),
+            ),
+        },
         &|i| tree_line(app, i),
         &|i| {
             let name = &repo.branches[i];
@@ -154,7 +168,40 @@ pub fn render_zoom(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
+/// The todo list editor of an interactive rebase. The list shows the newest
+/// commit first, the same order as the commits panel.
+pub fn render_rebase(frame: &mut Frame, area: Rect, items: &[TodoItem], cursor: usize) {
+    list::render(
+        frame,
+        area,
+        "Interactive rebase — enter: run, esc: cancel",
+        true,
+        cursor,
+        items.len(),
+        &|i| {
+            let it = &items[i];
+            let color = match it.action {
+                TodoAction::Pick => Color::Green,
+                TodoAction::Reword => Color::Cyan,
+                TodoAction::Edit => Color::Yellow,
+                TodoAction::Squash | TodoAction::Fixup => Color::Magenta,
+                TodoAction::Drop => Color::Red,
+            };
+            Line::from(vec![
+                Span::styled(format!("{:<7}", it.action.word()), Style::new().fg(color).add_modifier(Modifier::BOLD)),
+                Span::styled(format!("{} ", it.id), Style::new().fg(Color::DarkGray)),
+                Span::raw(it.subject.clone()),
+            ])
+        },
+    );
+}
+
 pub fn render_main(frame: &mut Frame, area: Rect, app: &App) {
+    // The rebase editor and the hunk view replace the diff pane.
+    if let crate::app::Mode::Rebase { items, cursor, .. } = &app.mode {
+        render_rebase(frame, area, items, *cursor);
+        return;
+    }
     // In hunk mode, show only the hunk under the cursor.
     let (title, text): (String, &str) = match &app.mode {
         crate::app::Mode::Hunks { path, hunks, cursor, .. } => {
