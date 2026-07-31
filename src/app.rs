@@ -1400,6 +1400,29 @@ mod tests {
         }
     }
 
+    // A long branch name must not push the counts off the panel.
+    #[test]
+    fn long_branch_names_keep_their_counts() {
+        let mut app = demo();
+        app.focus = 2;
+        app.repo.branches = [
+            ("max/macro-warehouse-selection-and-more", true, 5u32, 0u32),
+            ("max/pratt-parser-cleanup-with-a-very-long-tail", false, 12, 3),
+            ("main", false, 0, 0),
+        ]
+        .into_iter()
+        .map(|(name, current, ahead, behind)| BranchEntry {
+            name: name.into(),
+            current,
+            ahead,
+            behind,
+            gone: false,
+            age: "2d".into(),
+        })
+        .collect();
+        insta::assert_snapshot!(draw(&app, 80, 24).backend());
+    }
+
     #[test]
     fn confirm_window() {
         let mut app = demo();

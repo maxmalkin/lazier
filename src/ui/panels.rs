@@ -98,27 +98,45 @@ fn ymd(secs: u32) -> String {
 
 // A branch row: a mark for the current branch, then the name, then the
 // number of commits to push and to pull.
-fn branch_line(b: &BranchEntry) -> Line<'static> {
+// Cut a name that is too long. The last character becomes an ellipsis.
+fn shorten(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let keep = max.saturating_sub(1);
+    text.chars().take(keep).chain(std::iter::once('…')).collect()
+}
+
+/// One branch row. The counts to push and to pull always show. The name
+/// gives up its own columns to make room for them.
+fn branch_line(b: &BranchEntry, width: usize) -> Line<'static> {
     let (icon, name_style) = if b.current {
         ("*", Style::new().fg(Color::Green).add_modifier(Modifier::BOLD))
     } else {
         (" ", Style::new())
     };
+    // Build the tail first, thus its width is known.
+    let mut tail: Vec<Span<'static>> = Vec::new();
+    if b.ahead > 0 {
+        tail.push(Span::styled(format!(" ↑{}", b.ahead), Style::new().fg(Color::Yellow)));
+    }
+    if b.behind > 0 {
+        tail.push(Span::styled(format!(" ↓{}", b.behind), Style::new().fg(Color::Magenta)));
+    }
+    if b.gone {
+        tail.push(Span::styled(" gone", Style::new().fg(Color::Red)));
+    }
+    let tail_width: usize = tail.iter().map(|s| s.content.chars().count()).sum();
+    // The age takes five columns and the mark takes two.
+    let room = width.saturating_sub(7 + tail_width).max(3);
+
     let mut spans = vec![
         // The age column comes first, as lazygit shows it.
         Span::styled(format!("{:>4} ", b.age), Style::new().fg(Color::Cyan)),
         Span::styled(icon, Style::new().fg(Color::Green)),
-        Span::styled(format!(" {}", b.name), name_style),
+        Span::styled(format!(" {}", shorten(&b.name, room)), name_style),
     ];
-    if b.ahead > 0 {
-        spans.push(Span::styled(format!(" ↑{}", b.ahead), Style::new().fg(Color::Yellow)));
-    }
-    if b.behind > 0 {
-        spans.push(Span::styled(format!(" ↓{}", b.behind), Style::new().fg(Color::Magenta)));
-    }
-    if b.gone {
-        spans.push(Span::styled(" (gone)", Style::new().fg(Color::Red)));
-    }
+    spans.extend(tail);
     Line::from(spans)
 }
 
@@ -165,6 +183,8 @@ fn tree_line(app: &App, i: usize) -> Line<'static> {
 
 pub fn render_left(frame: &mut Frame, areas: [Rect; 5], app: &App) {
     let repo = &app.repo;
+    // The border takes two columns of the branch panel.
+    let branch_width = areas[2].width.saturating_sub(2) as usize;
     let mut head = repo.head.clone().unwrap_or_else(|| "(no repo)".into());
     // Show how far the branch is from its upstream.
     if repo.ahead > 0 {
@@ -190,7 +210,7 @@ pub fn render_left(frame: &mut Frame, areas: [Rect; 5], app: &App) {
             ),
         },
         &|i| tree_line(app, i),
-        &|i| branch_line(&repo.branches[i]),
+        &|i| branch_line(&repo.branches[i], branch_width),
         &|i| {
             let c = &repo.commits[i];
             commit_line(c, false, repo.unpushed.contains(c.id_str()))
