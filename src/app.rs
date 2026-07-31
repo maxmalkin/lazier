@@ -188,7 +188,10 @@ impl App {
         // The mouse moves the focus and the selection.
         execute!(std::io::stdout(), EnableMouseCapture)?;
         while !self.quit {
-            self.area = terminal.get_frame().area();
+            // Ask the backend for the size. get_frame would take a Frame
+            // out of the draw cycle and stop the next draw from showing.
+            let size = terminal.size()?;
+            self.area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
             terminal.draw(|f| ui::render(f, self))?;
             // The loop waits for a message and uses no processor time. While
             // a command runs, it wakes often enough to move the spinner.
@@ -925,10 +928,16 @@ impl App {
             }
 
             Action::Checkout => {
-                if let Some(b) = self.repo.branches.get(self.selected[2]) {
-                    let name = b.name.clone();
-                    self.write(svec(&["checkout", &name]));
+                let Some(b) = self.repo.branches.get(self.selected[2]) else { return };
+                // A checkout of the branch you are on does nothing, but it
+                // still reads every file. Do not run it.
+                if b.current {
+                    self.message = format!("you are on {}", b.name);
+                    self.message_ok = true;
+                    return;
                 }
+                let name = b.name.clone();
+                self.write(svec(&["checkout", &name]));
             }
             Action::NewBranchPrompt => {
                 self.mode = Mode::Input { prompt: "new branch name", buffer: String::new(), purpose: InputPurpose::NewBranch };
@@ -1597,6 +1606,19 @@ mod tests {
             ms: 5,
         });
         assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    // A checkout of the branch you are on reads every file for nothing.
+    #[test]
+    fn no_checkout_of_the_branch_you_are_on() {
+        let mut app = demo();
+        app.focus = 2;
+        app.selected[2] = 0;
+        assert!(app.repo.branches[0].current);
+        app.apply(Action::Checkout);
+        assert!(app.running.is_empty());
+        assert!(app.message.contains("you are on"), "{}", app.message);
+        assert!(app.message_ok, "this is not an error");
     }
 
     #[test]
