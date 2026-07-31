@@ -2,6 +2,7 @@ mod app;
 mod event;
 mod git;
 mod keys;
+mod tree;
 mod ui;
 
 

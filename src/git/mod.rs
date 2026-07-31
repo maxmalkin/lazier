@@ -52,6 +52,8 @@ pub enum Req {
     Write(Vec<String>),
     /// Apply a patch to the index. Reverse removes it from the index.
     ApplyPatch { patch: String, reverse: bool },
+    /// Read the sync state against the upstream branch.
+    Sync,
 }
 
 #[derive(PartialEq, Clone)]
@@ -67,6 +69,7 @@ pub enum Resp {
     LogChunk { entries: Vec<CommitEntry>, done: bool },
     Diff { seq: u64, text: String },
     WriteDone { ok: bool, msg: String },
+    Sync { ahead: u32, behind: u32, unpushed: std::collections::HashSet<String> },
 }
 
 pub struct Git {
@@ -132,6 +135,7 @@ pub fn spawn(event_tx: Sender<Msg>) -> anyhow::Result<Git> {
                 Req::Diff { seq, target } => Some(Resp::Diff { seq, text: display_diff(&worker_root, &target) }),
                 Req::Write(args) => Some(run_git(&worker_root, &args)),
                 Req::ApplyPatch { patch, reverse } => Some(apply_patch(&worker_root, &patch, reverse)),
+                Req::Sync => Some(sync_state(&worker_root)),
                 Req::LogChunk { .. } | Req::LogReset => None,
             };
             if let Some(resp) = resp
@@ -183,6 +187,34 @@ fn apply_patch(root: &PathBuf, patch: &str, reverse: bool) -> Resp {
         }
         Err(e) => Resp::WriteDone { ok: false, msg: e.to_string() },
     }
+}
+
+// Read ahead/behind counts and the set of commits that are not on the
+// upstream branch. No upstream gives zero counts and an empty set.
+// ponytail: two subprocess calls at refresh time. Move to gix when phase 4
+// touches ahead/behind logic again.
+fn sync_state(root: &PathBuf) -> Resp {
+    let run = |args: &[&str]| {
+        Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+    };
+    let (mut behind, mut ahead) = (0, 0);
+    if let Some(out) = run(&["rev-list", "--left-right", "--count", "@{upstream}...HEAD"])
+        && let Some((b, a)) = out.trim().split_once('\t')
+    {
+        behind = b.parse().unwrap_or(0);
+        ahead = a.parse().unwrap_or(0);
+    }
+    let unpushed = run(&["rev-list", "--abbrev-commit", "--abbrev=7", "@{upstream}..HEAD"])
+        .map(|out| out.lines().map(|l| l.chars().take(7).collect()).collect())
+        .unwrap_or_default();
+    Resp::Sync { ahead, behind, unpushed }
 }
 
 // ponytail: the display diff uses a subprocess. This is not the hot path.
