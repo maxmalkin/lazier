@@ -82,6 +82,10 @@ bottom shows the keys for the panel in focus.
 Move with `j` and `k`, `ctrl-d` and `ctrl-u`, `g` and `G`. `tab` goes to the
 next panel. `r` reads the repository again.
 
+The mouse works too. A click goes to the panel and puts the selection on the
+row you clicked. The wheel moves the selection. To select text with the
+mouse, hold `shift`, because the program takes the mouse events.
+
 These work in every panel: `P` push · `p` pull · `f` fetch · `:` run a shell
 command. Push, pull, and fetch run in the background. The bar shows `⟳` while
 one runs, and the command log holds its output.

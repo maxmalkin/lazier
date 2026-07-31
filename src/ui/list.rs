@@ -7,6 +7,16 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Scrollbar, ScrollbarOrientation, ScrollbarState};
 
+/// The index of the first row in view. It keeps the selected row visible.
+/// After a scroll, that row stays at the bottom edge. A click needs the
+/// same number to know which row is under the pointer.
+pub fn offset(selected: usize, len: usize, visible: usize) -> usize {
+    if visible == 0 {
+        return 0;
+    }
+    selected.saturating_sub(visible - 1).min(len.saturating_sub(visible))
+}
+
 pub fn render(
     frame: &mut Frame,
     area: Rect,
@@ -37,11 +47,7 @@ pub fn render(
     if visible == 0 || len == 0 {
         return;
     }
-    // Keep the selected row in view. After a scroll, the row stays at the
-    // bottom edge.
-    let offset = selected
-        .saturating_sub(visible - 1)
-        .min(len.saturating_sub(visible));
+    let offset = offset(selected, len, visible);
     for (i, idx) in (offset..len.min(offset + visible)).enumerate() {
         let rect = Rect { y: inner.y + i as u16, height: 1, ..inner };
         frame.render_widget(row(idx), rect);

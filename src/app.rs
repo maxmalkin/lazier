@@ -2,6 +2,7 @@ use anyhow::Result;
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{KeyCode, KeyEventKind};
 use ratatui::crossterm::execute;
+use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
@@ -129,6 +130,9 @@ pub struct App {
     pub running: Vec<String>,
     /// Counts up while a command runs. It moves the spinner.
     tick: usize,
+    /// The size of the terminal at the last draw. The mouse needs it to
+    /// know which panel is under the pointer.
+    area: ratatui::layout::Rect,
     pub rebase: Option<RebaseInfo>,
     git: Option<Git>,
     log_inflight: bool,
@@ -160,6 +164,7 @@ impl App {
             show_log: true,
             running: Vec::new(),
             tick: 0,
+            area: ratatui::layout::Rect::ZERO,
             rebase: None,
             git: None,
             log_inflight: false,
@@ -180,7 +185,10 @@ impl App {
         self.tx = Some(tx);
         self.refresh_all();
 
+        // The mouse moves the focus and the selection.
+        execute!(std::io::stdout(), EnableMouseCapture)?;
         while !self.quit {
+            self.area = terminal.get_frame().area();
             terminal.draw(|f| ui::render(f, self))?;
             // The loop waits for a message and uses no processor time. While
             // a command runs, it wakes often enough to move the spinner.
@@ -207,6 +215,7 @@ impl App {
                 self.suspend_and_run(terminal, args, envs)?;
             }
         }
+        let _ = execute!(std::io::stdout(), DisableMouseCapture);
         Ok(())
     }
 
@@ -222,7 +231,8 @@ impl App {
         self.pause.store(true, Ordering::Relaxed);
         let start = std::time::Instant::now();
         disable_raw_mode()?;
-        execute!(std::io::stdout(), LeaveAlternateScreen)?;
+        // The child program owns the terminal, thus it must own the mouse.
+        execute!(std::io::stdout(), DisableMouseCapture, LeaveAlternateScreen)?;
         let status = std::process::Command::new("git")
             .arg("-C")
             .arg(&git.root)
@@ -230,7 +240,7 @@ impl App {
             .envs(envs)
             .status();
         enable_raw_mode()?;
-        execute!(std::io::stdout(), EnterAlternateScreen)?;
+        execute!(std::io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
         terminal.clear()?;
         self.pause.store(false, Ordering::Relaxed);
         let ok = matches!(&status, Ok(s) if s.success());
@@ -248,6 +258,7 @@ impl App {
     pub fn update(&mut self, msg: Msg) {
         match msg {
             Msg::Key(key) if key.kind == KeyEventKind::Press => self.handle_key(key),
+            Msg::Mouse(m) => self.handle_mouse(m),
             Msg::Git(resp) => self.apply_resp(resp),
             Msg::Refresh => self.refresh_all(),
             // A resize needs no work. The next draw uses the new size.
@@ -672,6 +683,51 @@ impl App {
         // Keep the log short. Old entries have no value.
         if self.cmd_log.len() > 100 {
             self.cmd_log.remove(0);
+        }
+    }
+
+    /// The mouse moves the focus and the selection. A window is open in
+    /// every mode but Normal, thus the mouse does nothing then.
+    fn handle_mouse(&mut self, m: ratatui::crossterm::event::MouseEvent) {
+        use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+        if !matches!(self.mode, Mode::Normal) || self.zoom {
+            return;
+        }
+        let p = ui::panes(self.area, self.show_log);
+        // Find the panel under the pointer. Panel five is the diff.
+        let hit = p
+            .left
+            .iter()
+            .position(|r| contains(*r, m.column, m.row))
+            .or_else(|| contains(p.diff, m.column, m.row).then_some(5));
+        let Some(panel) = hit else { return };
+
+        match m.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.message.clear();
+                self.focus = panel;
+                if panel == 5 {
+                    return;
+                }
+                // The row under the pointer becomes the selection.
+                let area = p.left[panel];
+                let visible = area.height.saturating_sub(2) as usize;
+                let len = self.panel_len(panel);
+                let inside = m.row.saturating_sub(area.y + 1) as usize;
+                let idx = ui::list_offset(self.selected[panel], len, visible) + inside;
+                if inside < visible && idx < len {
+                    self.selected[panel] = idx;
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                self.focus = panel;
+                self.apply(Action::Down);
+            }
+            MouseEventKind::ScrollUp => {
+                self.focus = panel;
+                self.apply(Action::Up);
+            }
+            _ => {}
         }
     }
 
@@ -1130,6 +1186,11 @@ impl App {
     }
 }
 
+// True when the point sits inside the rectangle.
+fn contains(r: ratatui::layout::Rect, x: u16, y: u16) -> bool {
+    x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height
+}
+
 fn svec(args: &[&str]) -> Vec<String> {
     args.iter().map(|s| s.to_string()).collect()
 }
@@ -1386,6 +1447,46 @@ mod tests {
         );
         // With no commit in the list, a bisect cannot start.
         assert_eq!(bisect_command(false, &Action::BisectBad, None), None);
+    }
+
+    // A click moves the focus to the panel under the pointer, and puts the
+    // selection on the row that was clicked.
+    #[test]
+    fn a_click_moves_the_focus_and_the_selection() {
+        use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        let mut app = demo();
+        app.area = ratatui::layout::Rect::new(0, 0, 80, 30);
+        let p = ui::panes(app.area, app.show_log);
+        let click = |x, y| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        };
+        // The branches panel is the third box on the left.
+        let b = p.left[2];
+        app.handle_mouse(click(b.x + 4, b.y + 1));
+        assert_eq!(app.focus, 2, "the click must move the focus");
+        assert_eq!(app.selected[2], 0, "the first row is under that point");
+        app.handle_mouse(click(b.x + 4, b.y + 3));
+        assert_eq!(app.selected[2], 2, "the third row is under that point");
+
+        // A click in the diff pane moves the focus there.
+        app.handle_mouse(click(p.diff.x + 2, p.diff.y + 2));
+        assert_eq!(app.focus, 5);
+    }
+
+    #[test]
+    fn the_wheel_moves_the_selection() {
+        use ratatui::crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
+        let mut app = demo();
+        app.area = ratatui::layout::Rect::new(0, 0, 80, 30);
+        let p = ui::panes(app.area, app.show_log);
+        let wheel = |kind, y| MouseEvent { kind, column: p.left[2].x + 2, row: y, modifiers: KeyModifiers::NONE };
+        app.handle_mouse(wheel(MouseEventKind::ScrollDown, p.left[2].y + 1));
+        assert_eq!((app.focus, app.selected[2]), (2, 1));
+        app.handle_mouse(wheel(MouseEventKind::ScrollUp, p.left[2].y + 1));
+        assert_eq!(app.selected[2], 0);
     }
 
     // The spinner turns only while a command runs, and it repeats.

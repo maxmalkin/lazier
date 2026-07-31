@@ -6,12 +6,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
-use ratatui::crossterm::event::{self, Event, KeyEvent};
+use ratatui::crossterm::event::{self, Event, KeyEvent, MouseEvent};
 
 use crate::git::Resp;
 
 pub enum Msg {
     Key(KeyEvent),
+    Mouse(MouseEvent),
     Resize,
     Git(Resp),
     Refresh,
@@ -34,6 +35,7 @@ pub fn spawn_input(tx: Sender<Msg>, pause: Arc<AtomicBool>) {
             }
             let msg = match event::read() {
                 Ok(Event::Key(k)) => Msg::Key(k),
+                Ok(Event::Mouse(m)) => Msg::Mouse(m),
                 Ok(Event::Resize(..)) => Msg::Resize,
                 Ok(_) => continue,
                 Err(_) => break,

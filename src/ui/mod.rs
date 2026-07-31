@@ -9,9 +9,41 @@ use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 
 use crate::app::{App, CommitPurpose, Mode};
 
+pub use list::offset as list_offset;
+
 const KEY: Style = Style::new().fg(Color::Yellow);
 const DESC: Style = Style::new().fg(Color::Gray);
 const DIM: Style = Style::new().fg(Color::DarkGray);
+
+/// Where each panel sits. The renderer and the mouse both need this, thus
+/// one function gives it to both.
+pub struct Panes {
+    pub left: [Rect; 5],
+    pub diff: Rect,
+    pub log: Option<Rect>,
+}
+
+pub fn panes(area: Rect, show_log: bool) -> Panes {
+    let [body, _bar] =
+        Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(area);
+    let [left, main] =
+        Layout::horizontal([Constraint::Percentage(35), Constraint::Percentage(65)]).areas(body);
+    let left: [Rect; 5] = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Fill(1),
+        Constraint::Fill(1),
+        Constraint::Fill(1),
+        Constraint::Fill(1),
+    ])
+    .areas(left);
+    if show_log {
+        // The diff takes most of the height. The log needs only a few rows.
+        let [diff, log] = Layout::vertical([Constraint::Fill(1), Constraint::Length(6)]).areas(main);
+        Panes { left, diff, log: Some(log) }
+    } else {
+        Panes { left, diff: main, log: None }
+    }
+}
 
 pub fn render(frame: &mut Frame, app: &App) {
     let [body, bar] =
@@ -22,25 +54,11 @@ pub fn render(frame: &mut Frame, app: &App) {
         render_bar(frame, bar, app);
         return;
     }
-    let [left, main] =
-        Layout::horizontal([Constraint::Percentage(35), Constraint::Percentage(65)]).areas(body);
-    let areas: [Rect; 5] = Layout::vertical([
-        Constraint::Length(3),
-        Constraint::Fill(1),
-        Constraint::Fill(1),
-        Constraint::Fill(1),
-        Constraint::Fill(1),
-    ])
-    .areas(left);
-    panels::render_left(frame, areas, app);
-    // The command log takes the lower part of the main column.
-    if app.show_log {
-        // The diff takes most of the height. The log needs only a few rows.
-        let [diff, log] = Layout::vertical([Constraint::Fill(1), Constraint::Length(6)]).areas(main);
-        panels::render_main(frame, diff, app);
+    let p = panes(frame.area(), app.show_log);
+    panels::render_left(frame, p.left, app);
+    panels::render_main(frame, p.diff, app);
+    if let Some(log) = p.log {
         panels::render_log(frame, log, app);
-    } else {
-        panels::render_main(frame, main, app);
     }
     render_bar(frame, bar, app);
     match &app.mode {
