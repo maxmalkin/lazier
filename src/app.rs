@@ -8,6 +8,7 @@ use ratatui::crossterm::terminal::{
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
+use std::time::Duration;
 
 use std::collections::HashSet;
 
@@ -126,6 +127,8 @@ pub struct App {
     pub show_log: bool,
     /// The commands that run now. The bar shows them.
     pub running: Vec<String>,
+    /// Counts up while a command runs. It moves the spinner.
+    tick: usize,
     pub rebase: Option<RebaseInfo>,
     git: Option<Git>,
     log_inflight: bool,
@@ -156,6 +159,7 @@ impl App {
             cmd_log: Vec::new(),
             show_log: true,
             running: Vec::new(),
+            tick: 0,
             rebase: None,
             git: None,
             log_inflight: false,
@@ -178,9 +182,23 @@ impl App {
 
         while !self.quit {
             terminal.draw(|f| ui::render(f, self))?;
+            // The loop waits for a message and uses no processor time. While
+            // a command runs, it wakes often enough to move the spinner.
+            let msg = if self.running.is_empty() {
+                rx.recv()?
+            } else {
+                match rx.recv_timeout(Duration::from_millis(90)) {
+                    Ok(msg) => msg,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        self.tick += 1;
+                        continue;
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            };
             // Drain the queue before each draw. This makes one draw for a
             // burst of messages, not one draw for each message.
-            self.update(rx.recv()?);
+            self.update(msg);
             while let Ok(msg) = rx.try_recv() {
                 self.update(msg);
             }
@@ -655,6 +673,12 @@ impl App {
         if self.cmd_log.len() > 100 {
             self.cmd_log.remove(0);
         }
+    }
+
+    /// The spinner character for this moment. None when nothing runs.
+    pub fn spinner(&self) -> Option<char> {
+        const FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+        (!self.running.is_empty()).then(|| FRAMES[self.tick % FRAMES.len()])
     }
 
     pub fn panel_len(&self, panel: usize) -> usize {
@@ -1362,6 +1386,34 @@ mod tests {
         );
         // With no commit in the list, a bisect cannot start.
         assert_eq!(bisect_command(false, &Action::BisectBad, None), None);
+    }
+
+    // The spinner turns only while a command runs, and it repeats.
+    #[test]
+    fn the_spinner_turns_only_when_busy() {
+        let mut app = demo();
+        assert_eq!(app.spinner(), None, "nothing runs, thus no spinner");
+        app.apply(Action::Push);
+        let first = app.spinner().expect("a push must show a spinner");
+        app.tick += 1;
+        assert_ne!(app.spinner(), Some(first), "the next tick shows another frame");
+        app.tick += 9;
+        assert_eq!(app.spinner(), Some(first), "ten frames make a full turn");
+        app.apply_resp(Resp::WriteDone {
+            ok: true,
+            cmd: "git push".into(),
+            output: Vec::new(),
+            ms: 12,
+        });
+        assert_eq!(app.spinner(), None, "the spinner stops with the command");
+    }
+
+    #[test]
+    fn the_branch_row_shows_the_spinner() {
+        let mut app = demo();
+        app.focus = 2;
+        app.apply(Action::Push);
+        insta::assert_snapshot!(draw(&app, 80, 24).backend());
     }
 
     // A network command shows in the bar while it runs, then goes away

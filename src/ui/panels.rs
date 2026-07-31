@@ -109,11 +109,21 @@ fn shorten(text: &str, max: usize) -> String {
 
 /// One branch row. The counts to push and to pull always show. The name
 /// gives up its own columns to make room for them.
-fn branch_line(b: &BranchEntry, width: usize) -> Line<'static> {
-    let (icon, name_style) = if b.current {
-        ("*", Style::new().fg(Color::Green).add_modifier(Modifier::BOLD))
-    } else {
-        (" ", Style::new())
+fn branch_line(b: &BranchEntry, width: usize, spinner: Option<char>) -> Line<'static> {
+    // A network command works on the branch you are on, thus its mark
+    // becomes the spinner while the command runs.
+    let (icon, icon_color, name_style) = match (b.current, spinner) {
+        (true, Some(frame)) => (
+            frame.to_string(),
+            Color::Cyan,
+            Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ),
+        (true, None) => (
+            "*".to_string(),
+            Color::Green,
+            Style::new().fg(Color::Green).add_modifier(Modifier::BOLD),
+        ),
+        _ => (" ".to_string(), Color::Green, Style::new()),
     };
     // Build the tail first, thus its width is known.
     let mut tail: Vec<Span<'static>> = Vec::new();
@@ -133,7 +143,7 @@ fn branch_line(b: &BranchEntry, width: usize) -> Line<'static> {
     let mut spans = vec![
         // The age column comes first, as lazygit shows it.
         Span::styled(format!("{:>4} ", b.age), Style::new().fg(Color::Cyan)),
-        Span::styled(icon, Style::new().fg(Color::Green)),
+        Span::styled(icon, Style::new().fg(icon_color)),
         Span::styled(format!(" {}", shorten(&b.name, room)), name_style),
     ];
     spans.extend(tail);
@@ -185,6 +195,7 @@ pub fn render_left(frame: &mut Frame, areas: [Rect; 5], app: &App) {
     let repo = &app.repo;
     // The border takes two columns of the branch panel.
     let branch_width = areas[2].width.saturating_sub(2) as usize;
+    let spinner = app.spinner();
     let mut head = repo.head.clone().unwrap_or_else(|| "(no repo)".into());
     // Show how far the branch is from its upstream.
     if repo.ahead > 0 {
@@ -210,7 +221,7 @@ pub fn render_left(frame: &mut Frame, areas: [Rect; 5], app: &App) {
             ),
         },
         &|i| tree_line(app, i),
-        &|i| branch_line(&repo.branches[i], branch_width),
+        &|i| branch_line(&repo.branches[i], branch_width, spinner),
         &|i| {
             let c = &repo.commits[i];
             commit_line(c, false, repo.unpushed.contains(c.id_str()))

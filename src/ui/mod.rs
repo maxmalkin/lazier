@@ -312,8 +312,9 @@ fn render_bar(frame: &mut Frame, area: Rect, app: &App) {
         }
         // A running network command comes first, thus you always see it.
         Mode::Normal if !app.running.is_empty() => {
+            let frame = app.spinner().unwrap_or(' ');
             let mut spans = vec![Span::styled(
-                format!("⟳ {}  ", app.running.join(", ")),
+                format!("{frame} {}  ", app.running.join(", ")),
                 Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
             )];
             let left = w.saturating_sub(spans[0].content.chars().count());
