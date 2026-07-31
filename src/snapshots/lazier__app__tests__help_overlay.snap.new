@@ -1,13 +1,14 @@
 ---
 source: src/app.rs
+assertion_line: 1256
 expression: "draw(&app, 100, 30).backend()"
 ---
 "┌[1]─Status───────┌ Keys ────────────────────────────────────────────────────────┐─────────────────┐"
-"│main ↑2          │ Global                                                       │                 │"
+"│main ↑2          │ Global                                                       │─────────────────│"
 "└─────────────────│  tab / shift-tab  cycle the panes                            │                 │"
 "┌[2]─Files────────│        1 2 3 4 5  go to a panel                              │                 │"
 "│   ▾ /           │                0  go to the diff pane                        │                 │"
-"│ ?   notes.txt   │            j / k  move the selection                         │                 │"
+"│ ?   notes.txt   │            j / k  move the selection                         │─────────────────│"
 "│     ▾ src/      │  ctrl-d / ctrl-u  move one page                              │                 │"
 "│ A     app.rs    │            g / G  go to the top or the end                   │                 │"
 "│MM     main.rs   │            J / K  scroll the diff pane                       │                 │"

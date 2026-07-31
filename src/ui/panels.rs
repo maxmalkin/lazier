@@ -1,5 +1,5 @@
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
@@ -248,6 +248,33 @@ pub fn render_rebase(frame: &mut Frame, area: Rect, items: &[TodoItem], cursor: 
     );
 }
 
+// Color one line of a diff.
+fn diff_line(l: &str) -> Line<'static> {
+    // File header lines come before the +/- check. A "---" line is a
+    // header, not a removal.
+    let style = if l.starts_with("diff ")
+        || l.starts_with("index ")
+        || l.starts_with("--- ")
+        || l.starts_with("+++ ")
+    {
+        Style::new().add_modifier(Modifier::BOLD)
+    } else if l.starts_with("commit ")
+        || l.starts_with("Author")
+        || l.starts_with("Date")
+        || l.starts_with("Merge")
+    {
+        Style::new().fg(Color::Yellow)
+    } else {
+        match l.as_bytes().first() {
+            Some(b'+') => Style::new().fg(Color::Green),
+            Some(b'-') => Style::new().fg(Color::Red),
+            Some(b'@') => Style::new().fg(Color::Cyan),
+            _ => Style::new(),
+        }
+    };
+    Line::styled(l.to_string(), style)
+}
+
 /// One hunk, with a cursor on a line and a mark on each picked line.
 fn render_hunk(
     frame: &mut Frame,
@@ -288,68 +315,48 @@ pub fn render_main(frame: &mut Frame, area: Rect, app: &App) {
         }
         _ => {}
     }
-    // A file with changes in both places gets two panes, as lazygit does.
-    if !app.repo.diff_staged.is_empty() {
-        let [top, bottom] =
-            Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(area);
-        diff_pane(
-            frame,
-            top,
-            "[0]─Unstaged changes",
-            &app.repo.diff,
-            app.diff_scroll,
-            app.focus == 5 && !app.on_staged,
-        );
-        diff_pane(
-            frame,
-            bottom,
-            "[0]─Staged changes",
-            &app.repo.diff_staged,
-            app.staged_scroll,
-            app.focus == 5 && app.on_staged,
-        );
-        return;
-    }
-    let title = match app.focus {
-        3 => "[0]─Commit",
+    let both = !app.repo.diff_staged.is_empty() && !app.repo.diff.is_empty();
+    let title = match (app.focus, both) {
+        (3, _) => "[0]─Commit",
+        (_, true) => "[0]─Changes",
+        _ if !app.repo.diff_staged.is_empty() => "[0]─Staged changes",
         _ => "[0]─Unstaged changes",
     };
-    diff_pane(frame, area, title, &app.repo.diff, app.diff_scroll, app.focus == 5);
-}
 
-fn diff_pane(
-    frame: &mut Frame,
-    area: Rect,
-    title: &str,
-    text: &str,
-    scroll: u16,
-    focused: bool,
-) {
+    // One pane holds both sides. A header row separates them, thus the
+    // whole height is free for the diff.
+    let mut rows: Vec<Line> = Vec::new();
+    let width = area.width.saturating_sub(2) as usize;
+    let limit = app.diff_scroll as usize + area.height as usize * 4;
+    for (name, text, color) in [
+        ("Unstaged changes", &app.repo.diff, Color::Red),
+        ("Staged changes", &app.repo.diff_staged, Color::Green),
+    ] {
+        if text.is_empty() {
+            continue;
+        }
+        if both {
+            // "── " and the space after the name use four columns.
+            let bar = "─".repeat(width.saturating_sub(name.len() + 4));
+            rows.push(Line::styled(
+                format!("── {name} {bar}"),
+                Style::new().fg(color).add_modifier(Modifier::BOLD),
+            ));
+        }
+        for l in text.lines() {
+            rows.push(diff_line(l));
+            if rows.len() >= limit {
+                break;
+            }
+        }
+        if rows.len() >= limit {
+            break;
+        }
+    }
     // A wrapped line can use more than one row. Take more lines than the
     // height, then let the widget cut what does not fit.
-    let lines: Vec<Line> = text
-        .lines()
-        .skip(scroll as usize)
-        .take(area.height as usize * 4)
-        .map(|l| {
-            // File header lines come before the +/- check. A "---" line is
-            // a header, not a removal.
-            let style = if l.starts_with("diff ") || l.starts_with("index ") || l.starts_with("--- ") || l.starts_with("+++ ") {
-                Style::new().add_modifier(Modifier::BOLD)
-            } else if l.starts_with("commit ") || l.starts_with("Author") || l.starts_with("Date") || l.starts_with("Merge") {
-                Style::new().fg(Color::Yellow)
-            } else {
-                match l.as_bytes().first() {
-                    Some(b'+') => Style::new().fg(Color::Green),
-                    Some(b'-') => Style::new().fg(Color::Red),
-                    Some(b'@') => Style::new().fg(Color::Cyan),
-                    _ => Style::new(),
-                }
-            };
-            Line::from(l.to_string()).style(style)
-        })
-        .collect();
-    let border = if focused { Color::Green } else { Color::DarkGray };
+    let lines: Vec<Line> = rows.into_iter().skip(app.diff_scroll as usize).collect();
+    let border = if app.focus == 5 { Color::Green } else { Color::DarkGray };
     frame.render_widget(
         Paragraph::new(lines).wrap(Wrap { trim: false }).block(
             Block::bordered()

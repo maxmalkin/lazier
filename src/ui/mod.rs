@@ -35,7 +35,8 @@ pub fn render(frame: &mut Frame, app: &App) {
     panels::render_left(frame, areas, app);
     // The command log takes the lower part of the main column.
     if app.show_log {
-        let [diff, log] = Layout::vertical([Constraint::Fill(1), Constraint::Length(8)]).areas(main);
+        // The diff takes most of the height. The log needs only a few rows.
+        let [diff, log] = Layout::vertical([Constraint::Fill(1), Constraint::Length(6)]).areas(main);
         panels::render_main(frame, diff, app);
         panels::render_log(frame, log, app);
     } else {
