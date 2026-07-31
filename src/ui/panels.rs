@@ -1,12 +1,39 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
 use super::list;
 use crate::app::{App, PANELS};
-use crate::git::CommitEntry;
+use crate::git::{CommitEntry, FileEntry};
+
+fn mark_color(mark: char) -> Color {
+    match mark {
+        'A' => Color::Green,
+        'M' => Color::Yellow,
+        'D' => Color::Red,
+        'R' | 'C' => Color::Magenta,
+        'T' => Color::Cyan,
+        'U' => Color::LightRed,
+        _ => Color::DarkGray,
+    }
+}
+
+// Staged entries are green, work-tree entries red, like lazygit.
+fn file_line(f: &FileEntry) -> Line<'static> {
+    let path_color = if f.staged { Color::Green } else { Color::Red };
+    let stage = if f.staged {
+        Span::styled("S", Style::new().fg(Color::Green).add_modifier(Modifier::BOLD))
+    } else {
+        Span::raw(" ")
+    };
+    Line::from(vec![
+        stage,
+        Span::styled(f.mark.to_string(), Style::new().fg(mark_color(f.mark))),
+        Span::styled(format!(" {}", f.path), Style::new().fg(path_color)),
+    ])
+}
 
 // One color for each graph lane. The palette repeats after six lanes.
 const LANE_COLORS: [Color; 6] =
@@ -53,19 +80,28 @@ pub fn render_left(frame: &mut Frame, areas: [Rect; 5], app: &App) {
     let repo = &app.repo;
     let head = repo.head.clone().unwrap_or_else(|| "(no repo)".into());
     let rows: [&dyn Fn(usize) -> Line<'static>; 5] = [
-        &|_| Line::from(head.clone()),
-        &|i| {
-            let f = &repo.files[i];
-            let stage = if f.staged { 'S' } else { ' ' };
-            Line::from(format!("{stage}{} {}", f.mark, f.path))
-        },
+        &|_| Line::styled(head.clone(), Style::new().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        &|i| file_line(&repo.files[i]),
         &|i| {
             let name = &repo.branches[i];
-            let cur = if Some(name) == repo.head.as_ref() { '*' } else { ' ' };
-            Line::from(format!("{cur} {name}"))
+            if Some(name) == repo.head.as_ref() {
+                Line::styled(format!("* {name}"), Style::new().fg(Color::Green).add_modifier(Modifier::BOLD))
+            } else {
+                Line::from(format!("  {name}"))
+            }
         },
         &|i| commit_line(&repo.commits[i], false),
-        &|i| Line::from(repo.stashes[i].clone()),
+        &|i| {
+            // Color the stash name before the colon.
+            let s = &repo.stashes[i];
+            match s.split_once(':') {
+                Some((name, rest)) => Line::from(vec![
+                    Span::styled(name.to_string(), Style::new().fg(Color::Magenta)),
+                    Span::raw(format!(":{rest}")),
+                ]),
+                None => Line::from(s.clone()),
+            }
+        },
     ];
     for (i, area) in areas.into_iter().enumerate() {
         list::render(frame, area, PANELS[i], app.focus == i, app.selected[i], app.panel_len(i), rows[i]);
@@ -100,11 +136,19 @@ pub fn render_main(frame: &mut Frame, area: Rect, app: &App) {
         .skip(app.diff_scroll as usize)
         .take(area.height as usize)
         .map(|l| {
-            let style = match l.as_bytes().first() {
-                Some(b'+') => Style::new().fg(Color::Green),
-                Some(b'-') => Style::new().fg(Color::Red),
-                Some(b'@') => Style::new().fg(Color::Cyan),
-                _ => Style::new(),
+            // File header lines come before the +/- check. A "---" line is
+            // a header, not a removal.
+            let style = if l.starts_with("diff ") || l.starts_with("index ") || l.starts_with("--- ") || l.starts_with("+++ ") {
+                Style::new().add_modifier(Modifier::BOLD)
+            } else if l.starts_with("commit ") || l.starts_with("Author") || l.starts_with("Date") || l.starts_with("Merge") {
+                Style::new().fg(Color::Yellow)
+            } else {
+                match l.as_bytes().first() {
+                    Some(b'+') => Style::new().fg(Color::Green),
+                    Some(b'-') => Style::new().fg(Color::Red),
+                    Some(b'@') => Style::new().fg(Color::Cyan),
+                    _ => Style::new(),
+                }
             };
             Line::from(l.to_string()).style(style)
         })

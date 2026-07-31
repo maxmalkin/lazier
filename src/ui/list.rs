@@ -2,7 +2,7 @@
 //! row. The list length can be very large. Do not iterate the full range in
 //! this file.
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Color, Style};
 use ratatui::text::Line;
 use ratatui::widgets::Block;
 use ratatui::Frame;
@@ -16,8 +16,12 @@ pub fn render(
     len: usize,
     row: &dyn Fn(usize) -> Line<'static>,
 ) {
-    let block = Block::bordered().title(title);
-    let block = if focused { block.border_style(Style::new().green()) } else { block };
+    // The focused panel has a green frame. The other frames are dim.
+    let block = if focused {
+        Block::bordered().title(title).border_style(Style::new().fg(Color::Green))
+    } else {
+        Block::bordered().title(title).border_style(Style::new().fg(Color::DarkGray))
+    };
     let inner = block.inner(area);
     frame.render_widget(block, area);
 

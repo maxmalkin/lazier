@@ -55,6 +55,7 @@ pub struct App {
     pub repo: RepoState,
     pub mode: Mode,
     pub message: String,
+    pub message_ok: bool,
     pub zoom: bool,
     pub diff_scroll: u16,
     git: Option<Git>,
@@ -74,6 +75,7 @@ impl App {
             repo: RepoState::default(),
             mode: Mode::Normal,
             message: String::new(),
+            message_ok: true,
             zoom: false,
             diff_scroll: 0,
             git: None,
@@ -125,6 +127,7 @@ impl App {
         execute!(std::io::stdout(), EnterAlternateScreen)?;
         terminal.clear()?;
         self.pause.store(false, Ordering::Relaxed);
+        self.message_ok = matches!(&status, Ok(s) if s.success());
         self.message = match status {
             Ok(s) if s.success() => format!("git {} done", args.join(" ")),
             Ok(s) => format!("git {} failed ({s})", args.join(" ")),
@@ -385,6 +388,7 @@ impl App {
             }
             Resp::WriteDone { ok, msg } => {
                 self.message = msg;
+                self.message_ok = ok;
                 if ok {
                     self.refresh_all();
                 }

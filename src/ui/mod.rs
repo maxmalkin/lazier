@@ -3,7 +3,7 @@ mod panels;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::Style;
+use ratatui::style::{Color, Style};
 use ratatui::text::Line;
 
 use crate::app::{App, Mode};
@@ -35,12 +35,19 @@ pub fn render(frame: &mut Frame, app: &App) {
 // The bottom bar shows the active prompt or the last message.
 fn render_bar(frame: &mut Frame, area: Rect, app: &App) {
     let line = match &app.mode {
-        Mode::Input { prompt, buffer, .. } => Line::from(format!("{prompt}: {buffer}▏")),
-        Mode::Confirm { prompt, .. } => Line::from(prompt.clone()),
-        Mode::Hunks { cursor, hunks, .. } => {
-            Line::from(format!("hunk {}/{} — space: stage, j/k: move, esc: back", cursor + 1, hunks.len()))
+        Mode::Input { prompt, buffer, .. } => {
+            Line::styled(format!("{prompt}: {buffer}▏"), Style::new().fg(Color::Cyan))
         }
-        Mode::Normal => Line::from(app.message.clone()).style(Style::new()),
+        Mode::Confirm { prompt, .. } => Line::styled(prompt.clone(), Style::new().fg(Color::Yellow)),
+        Mode::Hunks { cursor, hunks, .. } => Line::styled(
+            format!("hunk {}/{} — space: stage, j/k: move, esc: back", cursor + 1, hunks.len()),
+            Style::new().fg(Color::Magenta),
+        ),
+        // A failed command shows its message in red.
+        Mode::Normal => {
+            let color = if app.message_ok { Color::Green } else { Color::Red };
+            Line::styled(app.message.clone(), Style::new().fg(color))
+        }
     };
     frame.render_widget(line, area);
 }
