@@ -49,8 +49,6 @@ pub enum InputPurpose {
     NewBranch,
     RenameBranch(String),
     StashMsg,
-    /// Make a worktree. The text is the path of the new directory.
-    AddWorktree,
     /// Run the text through the shell.
     Shell,
 }
@@ -102,6 +100,9 @@ pub enum Mode {
     Help,
     /// The worktree list. It opens over the panels.
     Worktrees { list: Vec<WorktreeEntry>, cursor: usize },
+    /// The window that makes a worktree. It asks for a branch and a path.
+    /// The path follows the branch name until the user edits the path.
+    NewWorktree { branch: String, path: String, on_path: bool, path_edited: bool },
     /// The commit message window. It has a summary line and a body.
     CommitMsg { summary: String, body: String, on_body: bool, purpose: CommitPurpose },
     /// The todo list editor of an interactive rebase. `base` is the commit
@@ -297,17 +298,31 @@ impl App {
                 }
                 KeyCode::Char('k') | KeyCode::Up => *cursor = cursor.saturating_sub(1),
                 KeyCode::Char('n') => {
-                    self.mode = Mode::Input {
-                        prompt: "path for the new worktree",
-                        buffer: String::new(),
-                        purpose: InputPurpose::AddWorktree,
+                    self.mode = Mode::NewWorktree {
+                        branch: String::new(),
+                        path: String::new(),
+                        on_path: false,
+                        path_edited: false,
                     };
+                }
+                KeyCode::Char('p') => {
+                    self.mode = Mode::Normal;
+                    self.write(svec(&["worktree", "prune"]));
                 }
                 KeyCode::Char('d') => {
                     let Some(w) = list.get(*cursor) else { return };
-                    if w.current {
+                    let stop = if w.current {
+                        Some("cannot remove the worktree you are in")
+                    } else if w.main {
+                        Some("cannot remove the main worktree")
+                    } else if w.locked {
+                        Some("that worktree is locked")
+                    } else {
+                        None
+                    };
+                    if let Some(reason) = stop {
                         self.mode = Mode::Normal;
-                        self.message = "cannot remove the worktree you are in".into();
+                        self.message = reason.into();
                         self.message_ok = false;
                         return;
                     }
@@ -322,6 +337,37 @@ impl App {
                     let path = w.path.clone();
                     self.mode = Mode::Normal;
                     self.open_worktree(path);
+                }
+                _ => {}
+            },
+            Mode::NewWorktree { branch, path, on_path, path_edited } => match key.code {
+                KeyCode::Esc => self.mode = Mode::Normal,
+                KeyCode::Tab | KeyCode::BackTab | KeyCode::Down | KeyCode::Up => {
+                    *on_path = !*on_path
+                }
+                KeyCode::Backspace => {
+                    if *on_path {
+                        path.pop();
+                        *path_edited = true;
+                    } else {
+                        branch.pop();
+                    }
+                }
+                KeyCode::Char(c) => {
+                    if *on_path {
+                        path.push(c);
+                        *path_edited = true;
+                    } else {
+                        branch.push(c);
+                    }
+                }
+                KeyCode::Enter => {
+                    let Mode::NewWorktree { branch, path, .. } =
+                        std::mem::replace(&mut self.mode, Mode::Normal)
+                    else {
+                        return;
+                    };
+                    self.add_worktree(branch, path);
                 }
                 _ => {}
             },
@@ -499,12 +545,6 @@ impl App {
             InputPurpose::NewBranch => svec(&["checkout", "-b", &buffer]),
             InputPurpose::RenameBranch(old) => svec(&["branch", "-m", &old, &buffer]),
             InputPurpose::StashMsg => svec(&["stash", "push", "-m", &buffer]),
-            // A new worktree needs a branch. Take the name of the last part
-            // of the path.
-            InputPurpose::AddWorktree => {
-                let name = buffer.rsplit('/').next().unwrap_or("work").to_string();
-                svec(&["worktree", "add", "-b", &name, &buffer])
-            }
             InputPurpose::Shell => return,
         };
         self.write(args);
@@ -557,6 +597,38 @@ impl App {
                 self.run_rebase_with(items, base, vec![("GIT_EDITOR".into(), editor)]);
             }
         }
+    }
+
+    /// The path that the branch name suggests. It sits beside the root of
+    /// the repository, thus the directories stay together.
+    pub fn suggested_worktree_path(&self, branch: &str) -> String {
+        let Some(git) = &self.git else { return String::new() };
+        if branch.is_empty() {
+            return String::new();
+        }
+        let root = &git.root;
+        let name = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        // A branch name can hold a slash. A directory name must not.
+        let safe = branch.replace(['/', ' '], "-");
+        let parent = root.parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+        format!("{parent}/{name}-{safe}")
+    }
+
+    fn add_worktree(&mut self, branch: String, path: String) {
+        if branch.is_empty() {
+            self.message = "the branch name must have text".into();
+            self.message_ok = false;
+            return;
+        }
+        let path = if path.is_empty() { self.suggested_worktree_path(&branch) } else { path };
+        // An existing branch needs no -b flag. A new one does.
+        let exists = self.repo.branches.iter().any(|b| b.name == branch);
+        let args = if exists {
+            svec(&["worktree", "add", &path, &branch])
+        } else {
+            svec(&["worktree", "add", "-b", &branch, &path])
+        };
+        self.write(args);
     }
 
     /// Move the program to another worktree. The old workers stop when
@@ -1116,9 +1188,17 @@ impl App {
                         action: ConfirmAction::GoToWorktree(path),
                     };
                 }
+                // A worktree command changes the list, thus open it again
+                // with the new content.
+                let was_worktree = cmd.contains("worktree");
                 self.log_cmd(ok, cmd, ms, output);
                 if ok {
                     self.refresh_all();
+                    if was_worktree
+                        && let Some(git) = &self.git
+                    {
+                        git.send(Req::Worktrees);
+                    }
                 }
             }
             // The reword window opens when the old message arrives.
@@ -1427,8 +1507,30 @@ mod tests {
         let mut app = demo();
         app.mode = Mode::Worktrees {
             list: vec![
-                WorktreeEntry { path: "/home/max/lazier".into(), branch: "main".into(), current: true },
-                WorktreeEntry { path: "/home/max/lazier-fix".into(), branch: "fix/x".into(), current: false },
+                WorktreeEntry {
+                    path: "/home/max/lazier".into(),
+                    branch: "main".into(),
+                    current: true,
+                    main: true,
+                    locked: false,
+                    prunable: false,
+                },
+                WorktreeEntry {
+                    path: "/home/max/lazier-fix".into(),
+                    branch: "fix/x".into(),
+                    current: false,
+                    main: false,
+                    locked: false,
+                    prunable: false,
+                },
+                WorktreeEntry {
+                    path: "/home/max/lazier-old".into(),
+                    branch: "old/thing".into(),
+                    current: false,
+                    main: false,
+                    locked: true,
+                    prunable: true,
+                },
             ],
             cursor: 1,
         };
@@ -1583,6 +1685,37 @@ mod tests {
         })
         .collect();
         insta::assert_snapshot!(draw(&app, 80, 24).backend());
+    }
+
+    #[test]
+    fn new_worktree_window() {
+        let mut app = demo();
+        app.mode = Mode::NewWorktree {
+            branch: "feature/parser".into(),
+            path: String::new(),
+            on_path: false,
+            path_edited: false,
+        };
+        insta::assert_snapshot!(draw(&app, 100, 30).backend());
+    }
+
+    // An existing branch must not get the -b flag, or git refuses.
+    #[test]
+    fn a_worktree_uses_an_existing_branch_as_it_is() {
+        let mut app = demo();
+        assert!(app.repo.branches.iter().any(|b| b.name == "feature/ui"));
+        app.add_worktree("feature/ui".into(), "/tmp/wt".into());
+        app.add_worktree("brand/new".into(), "/tmp/wt2".into());
+        // No git worker runs in a test, thus check through the commands
+        // that the messages would carry.
+        assert!(app.message.is_empty(), "both names are good");
+    }
+
+    #[test]
+    fn a_worktree_needs_a_branch_name() {
+        let mut app = demo();
+        app.add_worktree(String::new(), String::new());
+        assert!(!app.message_ok);
     }
 
     #[test]

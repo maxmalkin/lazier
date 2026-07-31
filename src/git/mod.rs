@@ -93,6 +93,11 @@ pub struct WorktreeEntry {
     pub path: String,
     pub branch: String,
     pub current: bool,
+    /// The first worktree of a repository. Git does not let you remove it.
+    pub main: bool,
+    pub locked: bool,
+    /// The directory is gone. A prune removes the record.
+    pub prunable: bool,
 }
 
 #[derive(PartialEq, Clone)]
@@ -151,6 +156,9 @@ pub fn spawn(event_tx: Sender<Msg>) -> anyhow::Result<Git> {
         .work_dir()
         .map(Into::into)
         .unwrap_or_else(|| shared.path().into());
+    // Discovery can give a relative path such as ".". A full path is needed
+    // to name the parent directory and to compare worktrees.
+    let root = root.canonicalize().unwrap_or(root);
     let git_dir: PathBuf = shared.path().into();
 
     let (tx, rx) = channel::<Req>();
@@ -381,17 +389,26 @@ fn worktrees(root: &PathBuf) -> Vec<WorktreeEntry> {
     for block in text.split("\n\n") {
         let mut path = String::new();
         let mut branch = String::from("(detached)");
+        let (mut locked, mut prunable) = (false, false);
         for line in block.lines() {
             if let Some(p) = line.strip_prefix("worktree ") {
                 path = p.to_string();
             } else if let Some(b) = line.strip_prefix("branch ") {
                 branch = b.trim_start_matches("refs/heads/").to_string();
+            } else if line.starts_with("locked") {
+                locked = true;
+            } else if line.starts_with("prunable") {
+                prunable = true;
+            } else if line.starts_with("bare") {
+                branch = "(bare)".into();
             }
         }
         if !path.is_empty() {
             let real = PathBuf::from(&path);
             let current = real.canonicalize().unwrap_or(real) == here;
-            list.push(WorktreeEntry { path, branch, current });
+            // Git always prints the main worktree first.
+            let main = list.is_empty();
+            list.push(WorktreeEntry { path, branch, current, main, locked, prunable });
         }
     }
     list

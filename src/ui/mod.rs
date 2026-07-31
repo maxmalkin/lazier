@@ -66,7 +66,11 @@ pub fn render(frame: &mut Frame, app: &App) {
         Mode::Confirm { prompt, .. } => render_confirm(frame, body, prompt),
         Mode::Worktrees { list, cursor } => {
             let h = (list.len() as u16 + 2).max(4);
-            panels::render_worktrees(frame, centered(body, 78, h), list, *cursor);
+            let home = std::env::var("HOME").unwrap_or_default();
+            panels::render_worktrees(frame, centered(body, 82, h), list, *cursor, &home);
+        }
+        Mode::NewWorktree { branch, path, on_path, .. } => {
+            render_new_worktree(frame, body, branch, path, *on_path, app)
         }
         Mode::CommitMsg { summary, body: text, on_body, purpose } => {
             render_commit(frame, body, summary, text, *on_body, purpose)
@@ -85,6 +89,84 @@ fn centered(area: Rect, w: u16, h: u16) -> Rect {
         width: w,
         height: h,
     }
+}
+
+/// The window that makes a worktree. It asks for a branch and a path. An
+/// empty path takes the suggestion under the field.
+fn render_new_worktree(
+    frame: &mut Frame,
+    body_area: Rect,
+    branch: &str,
+    path: &str,
+    on_path: bool,
+    app: &App,
+) {
+    let area = centered(body_area, 76, 12);
+    frame.render_widget(Clear, area);
+    let outer = Block::bordered()
+        .title(Span::styled(
+            " New worktree ",
+            Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ))
+        .border_style(Style::new().fg(Color::Cyan));
+    let inner = outer.inner(area);
+    frame.render_widget(outer, area);
+
+    let [top, mid, note, hint] = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Length(3),
+        Constraint::Fill(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+
+    let active = Style::new().fg(Color::Green);
+    let idle = Style::new().fg(Color::DarkGray);
+    let known = app.repo.branches.iter().any(|b| b.name == branch);
+    let branch_title = if branch.is_empty() {
+        "branch".to_string()
+    } else if known {
+        "branch (it exists)".to_string()
+    } else {
+        "branch (a new one)".to_string()
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(branch.to_string(), Style::new().fg(Color::White)),
+            Span::styled(if on_path { "" } else { "▏" }, active),
+        ]))
+        .block(Block::bordered().title(branch_title).border_style(if on_path { idle } else { active })),
+        top,
+    );
+    // An empty path field shows the suggestion, in a dim color.
+    let suggested = app.suggested_worktree_path(branch);
+    let shown = if path.is_empty() && !on_path {
+        Span::styled(suggested.clone(), idle)
+    } else {
+        Span::styled(path.to_string(), Style::new().fg(Color::White))
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            shown,
+            Span::styled(if on_path { "▏" } else { "" }, active),
+        ]))
+        .block(Block::bordered().title("path").border_style(if on_path { active } else { idle })),
+        mid,
+    );
+    frame.render_widget(
+        Paragraph::new(if known {
+            "The worktree will use the branch that is there."
+        } else {
+            "The worktree will make this branch."
+        })
+        .style(idle)
+        .wrap(Wrap { trim: false }),
+        Rect { x: note.x + 1, width: note.width.saturating_sub(2), ..note },
+    );
+    frame.render_widget(
+        hint_line(&[&[("<enter>", "Make it"), ("<tab>", "Other field"), ("<esc>", "Cancel")]]),
+        hint,
+    );
 }
 
 /// The window that asks the user to say yes or no. A long path wraps, thus
@@ -296,8 +378,11 @@ fn render_bar(frame: &mut Frame, area: Rect, app: &App) {
             ("<enter>", "Go to it"),
             ("n", "New"),
             ("d", "Remove"),
+            ("p", "Prune"),
             ("<esc>", "Close"),
         ]]),
+        // The window draws its own keys.
+        Mode::NewWorktree { .. } => Line::default(),
         // A bisect takes over four keys of the commits panel.
         Mode::Normal if app.repo.bisecting => {
             let mut spans = vec![Span::styled(

@@ -419,15 +419,43 @@ pub fn render_worktrees(
     area: Rect,
     list: &[crate::git::WorktreeEntry],
     cursor: usize,
+    home: &str,
 ) {
     frame.render_widget(Clear, area);
+    let width = area.width.saturating_sub(2) as usize;
     list::render(frame, area, " Worktrees ", true, cursor, list.len(), &|i| {
         let w = &list[i];
-        let icon = if w.current { "●" } else { " " };
+        // A tag says what is special about the worktree.
+        let mut tag = String::new();
+        if w.main {
+            tag.push_str(" main");
+        }
+        if w.locked {
+            tag.push_str(" locked");
+        }
+        if w.prunable {
+            tag.push_str(" gone");
+        }
+        // A path under your home directory shows as a tilde.
+        let path = match (!home.is_empty()).then(|| w.path.strip_prefix(home)).flatten() {
+            Some(rest) => format!("~{rest}"),
+            None => w.path.clone(),
+        };
+        let branch_col = 22.min(width / 3);
+        let room = width.saturating_sub(2 + branch_col + tag.chars().count() + 1).max(6);
+        let (icon, branch_style) = if w.current {
+            ("●", Style::new().fg(Color::Green).add_modifier(Modifier::BOLD))
+        } else {
+            (" ", Style::new().fg(Color::Cyan))
+        };
         Line::from(vec![
             Span::styled(icon, Style::new().fg(Color::Green)),
-            Span::styled(format!(" {:<18.18}", w.branch), Style::new().fg(Color::Cyan)),
-            Span::styled(w.path.clone(), Style::new().fg(Color::Gray)),
+            Span::styled(
+                format!(" {:<w$.w$}", w.branch, w = branch_col),
+                branch_style,
+            ),
+            Span::styled(shorten(&path, room), Style::new().fg(Color::Gray)),
+            Span::styled(tag, Style::new().fg(if w.prunable { Color::Red } else { Color::DarkGray })),
         ])
     });
 }

@@ -110,7 +110,11 @@ one runs, and the command log holds its output.
 - **Rebase.** `p` `r` `e` `s` `f` `d` set the action · `J` `K` move a commit
   · `enter` run. If it stops: `c` continue · `s` skip · `A` abort.
 - **Stash.** `enter` or `a` apply · `p` pop · `d` drop.
-- **Worktrees.** `enter` go to one · `n` new · `d` remove.
+- **Worktrees.** `W` opens the list, with a mark for the one you are in and
+  a tag for the main one, a locked one, and one whose directory is gone.
+  `enter` go to one · `n` new · `d` remove · `p` prune. The new-worktree
+  window asks for a branch and a path. It says whether the branch exists,
+  makes it when it does not, and suggests a path beside the repository.
 
 ## License
 
