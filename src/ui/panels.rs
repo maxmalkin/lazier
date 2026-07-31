@@ -2,7 +2,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph, Wrap};
+use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 
 use super::list;
 use crate::app::{App, PANELS};
@@ -127,11 +127,12 @@ pub fn render_left(frame: &mut Frame, areas: [Rect; 5], app: &App) {
     if repo.behind > 0 {
         head.push_str(&format!(" ↓{}", repo.behind));
     }
-    // A stopped rebase replaces the branch name with its progress.
+    // A rebase or a bisect replaces the branch name with its state.
     let banner = app
         .rebase
         .as_ref()
-        .map(|r| (format!("REBASE {}/{}", r.step, r.total), Color::Yellow));
+        .map(|r| (format!("REBASE {}/{}", r.step, r.total), Color::Yellow))
+        .or_else(|| repo.bisecting.then(|| ("BISECT".to_string(), Color::Magenta)));
     let rows: [&dyn Fn(usize) -> Line<'static>; 5] = [
         &|_| match &banner {
             Some((text, color)) => {
@@ -213,19 +214,47 @@ pub fn render_rebase(frame: &mut Frame, area: Rect, items: &[TodoItem], cursor: 
     );
 }
 
+/// One hunk, with a cursor on a line and a mark on each picked line.
+fn render_hunk(
+    frame: &mut Frame,
+    area: Rect,
+    path: &str,
+    hunks: &[String],
+    cursor: usize,
+    line: usize,
+    picked: &[usize],
+) {
+    let body: Vec<&str> = hunks[cursor].lines().skip(1).collect();
+    let title = format!("Hunk {}/{} — {path}", cursor + 1, hunks.len());
+    list::render(frame, area, &title, true, line, body.len(), &|i| {
+        let text = body[i];
+        let style = match text.as_bytes().first() {
+            Some(b'+') => Style::new().fg(Color::Green),
+            Some(b'-') => Style::new().fg(Color::Red),
+            _ => Style::new().fg(Color::Gray),
+        };
+        // A marked line shows a bar in the gutter.
+        let gutter = if picked.contains(&i) {
+            Span::styled("▌", Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+        } else {
+            Span::raw(" ")
+        };
+        Line::from(vec![gutter, Span::styled(text.to_string(), style)])
+    });
+}
+
 pub fn render_main(frame: &mut Frame, area: Rect, app: &App) {
     // The rebase editor and the hunk view replace the diff pane.
-    if let crate::app::Mode::Rebase { items, cursor, .. } = &app.mode {
-        render_rebase(frame, area, items, *cursor);
-        return;
-    }
-    // In hunk mode, show only the hunk under the cursor.
-    let (title, text): (String, &str) = match &app.mode {
-        crate::app::Mode::Hunks { path, hunks, cursor, .. } => {
-            (format!("Stage hunks — {path}"), hunks[*cursor].as_str())
+    match &app.mode {
+        crate::app::Mode::Rebase { items, cursor, .. } => {
+            return render_rebase(frame, area, items, *cursor);
         }
-        _ => ("[0] Diff".into(), app.repo.diff.as_str()),
-    };
+        crate::app::Mode::Hunks { path, hunks, cursor, line, picked, .. } => {
+            return render_hunk(frame, area, path, hunks, *cursor, *line, picked);
+        }
+        _ => {}
+    }
+    let (title, text): (String, &str) = ("[0] Diff".into(), app.repo.diff.as_str());
     let focused = app.focus == 5;
     // A wrapped line can use more than one row. Take more lines than the
     // height, then let the widget cut what does not fit.
@@ -258,6 +287,25 @@ pub fn render_main(frame: &mut Frame, area: Rect, app: &App) {
             .block(Block::bordered().title(title).border_style(Style::new().fg(border))),
         area,
     );
+}
+
+/// The worktree list. It opens over the panels.
+pub fn render_worktrees(
+    frame: &mut Frame,
+    area: Rect,
+    list: &[crate::git::WorktreeEntry],
+    cursor: usize,
+) {
+    frame.render_widget(Clear, area);
+    list::render(frame, area, " Worktrees ", true, cursor, list.len(), &|i| {
+        let w = &list[i];
+        let icon = if w.current { "●" } else { " " };
+        Line::from(vec![
+            Span::styled(icon, Style::new().fg(Color::Green)),
+            Span::styled(format!(" {:<18.18}", w.branch), Style::new().fg(Color::Cyan)),
+            Span::styled(w.path.clone(), Style::new().fg(Color::Gray)),
+        ])
+    });
 }
 
 /// The command log shows the last git commands, their result, and how long

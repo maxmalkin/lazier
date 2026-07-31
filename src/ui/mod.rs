@@ -44,6 +44,10 @@ pub fn render(frame: &mut Frame, app: &App) {
     render_bar(frame, bar, app);
     match &app.mode {
         Mode::Help => render_help(frame, body),
+        Mode::Worktrees { list, cursor } => {
+            let h = (list.len() as u16 + 2).max(4);
+            panels::render_worktrees(frame, centered(body, 78, h), list, *cursor);
+        }
         Mode::CommitMsg { summary, body: text, on_body, purpose } => {
             render_commit(frame, body, summary, text, *on_body, purpose)
         }
@@ -149,7 +153,14 @@ const HINTS: [Hints; 6] = [
         ("m", "merge"),
         ("P/p/f", "push/pull/fetch"),
     ],
-    &[("enter", "zoom"), ("i", "rebase"), ("w", "reword"), ("v", "revert"), ("g/G", "top/bottom")],
+    &[
+        ("enter", "zoom"),
+        ("i", "rebase"),
+        ("w", "reword"),
+        ("v", "revert"),
+        ("y", "cherry-pick"),
+        ("b/o", "bisect bad/good"),
+    ],
     &[("enter/a", "apply"), ("p", "pop"), ("d", "drop")],
     &[("j/k", "scroll"), ("g/G", "top/bottom")],
 ];
@@ -177,13 +188,20 @@ fn render_bar(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled(format!("{buffer}▏"), Style::new().fg(Color::White)),
         ]),
         Mode::Confirm { prompt, .. } => Line::styled(prompt.clone(), Style::new().fg(Color::Yellow)),
-        Mode::Hunks { cursor, hunks, .. } => {
+        Mode::Hunks { picked, .. } => {
             let mut spans = vec![Span::styled(
-                format!("hunk {}/{}  ", cursor + 1, hunks.len()),
+                format!("{} marked  ", picked.len()),
                 Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD),
             )];
             spans.extend(
-                hint_line(&[&[("space", "stage"), ("j/k", "move"), ("esc", "back")]]).spans,
+                hint_line(&[&[
+                    ("space", "mark line"),
+                    ("enter", "stage marked"),
+                    ("a", "stage hunk"),
+                    ("J/K", "hunk"),
+                    ("esc", "back"),
+                ]])
+                .spans,
             );
             Line::from(spans)
         }
@@ -199,6 +217,30 @@ fn render_bar(frame: &mut Frame, area: Rect, app: &App) {
             ("esc", "cancel"),
         ]]),
         Mode::Help => Line::styled("press any key to close the help", Style::new().fg(Color::Cyan)),
+        Mode::Worktrees { .. } => hint_line(&[&[
+            ("enter", "go to it"),
+            ("n", "new"),
+            ("d", "remove"),
+            ("esc", "close"),
+        ]]),
+        // A bisect takes over four keys of the commits panel.
+        Mode::Normal if app.repo.bisecting => {
+            let mut spans = vec![Span::styled(
+                "BISECT  ",
+                Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+            )];
+            spans.extend(
+                hint_line(&[&[
+                    ("b", "bad"),
+                    ("o", "good"),
+                    ("S", "skip"),
+                    ("A", "reset"),
+                    ("@", "log"),
+                ]])
+                .spans,
+            );
+            Line::from(spans)
+        }
         // The commit window draws its own key hints.
         Mode::CommitMsg { .. } => Line::default(),
         // A stopped rebase takes over three keys.
@@ -263,6 +305,16 @@ const HELP: &[(&str, Hints)] = &[
         ],
     ),
     (
+        "Hunk view",
+        &[
+            ("j / k", "move to another line"),
+            ("space", "mark the line, or remove the mark"),
+            ("enter", "stage the marked lines"),
+            ("a", "stage the full hunk"),
+            ("J / K", "go to another hunk"),
+        ],
+    ),
+    (
         "Commit window",
         &[
             ("enter", "commit, or make a new line in the body"),
@@ -277,7 +329,24 @@ const HELP: &[(&str, Hints)] = &[
             ("i", "start an interactive rebase here"),
             ("w", "give the commit a new message"),
             ("v", "revert the commit"),
+            ("y", "put its changes in the index, with no commit"),
             ("↑", "this commit is not on the upstream branch"),
+        ],
+    ),
+    (
+        "Bisect [4]",
+        &[
+            ("b", "start a bisect here, or mark a bad commit"),
+            ("o", "mark a good commit"),
+            ("S / A", "skip this commit, or end the bisect"),
+        ],
+    ),
+    (
+        "Worktrees",
+        &[
+            ("W", "open the list"),
+            ("enter", "go to that worktree"),
+            ("n / d", "make one, or remove one"),
         ],
     ),
     ("Stash [5]", &[("enter / a", "apply the stash"), ("p", "pop it"), ("d", "drop it")]),

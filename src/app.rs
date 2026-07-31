@@ -13,7 +13,9 @@ use std::collections::HashSet;
 
 use crate::event::{self, Msg};
 use crate::git::rebase::{self, RebaseInfo, TodoAction, TodoItem};
-use crate::git::{self, BranchEntry, CommitEntry, DiffTarget, FileEntry, Git, Req, Resp, patch};
+use crate::git::{
+    self, BranchEntry, CommitEntry, DiffTarget, FileEntry, Git, Req, Resp, WorktreeEntry, patch,
+};
 use crate::keys::{Action, action_for};
 use crate::tree::{self, TreeRow};
 use crate::ui;
@@ -34,6 +36,7 @@ pub struct RepoState {
     pub diff: String,
     pub ahead: u32,
     pub behind: u32,
+    pub bisecting: bool,
     /// Short ids of commits that the upstream branch does not have.
     pub unpushed: HashSet<String>,
 }
@@ -42,6 +45,8 @@ pub enum InputPurpose {
     NewBranch,
     RenameBranch(String),
     StashMsg,
+    /// Make a worktree. The text is the path of the new directory.
+    AddWorktree,
 }
 
 /// What the commit window does when the user sends it.
@@ -66,14 +71,26 @@ pub enum ConfirmAction {
     DropStash(usize),
     Merge(String),
     Revert(String),
+    RemoveWorktree(String),
 }
 
 pub enum Mode {
     Normal,
     Input { prompt: &'static str, buffer: String, purpose: InputPurpose },
     Confirm { prompt: String, action: ConfirmAction },
-    Hunks { path: String, header: String, hunks: Vec<String>, cursor: usize },
+    /// The hunk view of one file. `cursor` is the hunk in view. `line` is
+    /// the body line in that hunk. `picked` holds the marked body lines.
+    Hunks {
+        path: String,
+        header: String,
+        hunks: Vec<String>,
+        cursor: usize,
+        line: usize,
+        picked: Vec<usize>,
+    },
     Help,
+    /// The worktree list. It opens over the panels.
+    Worktrees { list: Vec<WorktreeEntry>, cursor: usize },
     /// The commit message window. It has a summary line and a body.
     CommitMsg { summary: String, body: String, on_body: bool, purpose: CommitPurpose },
     /// The todo list editor of an interactive rebase. `base` is the commit
@@ -105,6 +122,9 @@ pub struct App {
     diff_target: Option<DiffTarget>,
     pending_suspend: Option<(Vec<String>, Vec<(String, String)>)>,
     pause: Arc<AtomicBool>,
+    /// A copy of the message sender. A move to another worktree needs it to
+    /// start new workers.
+    tx: Option<mpsc::Sender<Msg>>,
 }
 
 impl App {
@@ -131,6 +151,7 @@ impl App {
             diff_target: None,
             pending_suspend: None,
             pause: Arc::new(AtomicBool::new(false)),
+            tx: None,
         }
     }
 
@@ -138,8 +159,9 @@ impl App {
         let (tx, rx) = mpsc::channel();
         event::spawn_input(tx.clone(), self.pause.clone());
         let git = git::spawn(tx.clone())?;
-        git::watch::spawn(git.git_dir.clone(), tx);
+        git::watch::spawn(git.git_dir.clone(), tx.clone());
         self.git = Some(git);
+        self.tx = Some(tx);
         self.refresh_all();
 
         while !self.quit {
@@ -224,6 +246,41 @@ impl App {
                 }
             }
             Mode::Help => self.mode = Mode::Normal,
+            Mode::Worktrees { list, cursor } => match key.code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('W') => self.mode = Mode::Normal,
+                KeyCode::Char('j') | KeyCode::Down => {
+                    *cursor = (*cursor + 1).min(list.len().saturating_sub(1))
+                }
+                KeyCode::Char('k') | KeyCode::Up => *cursor = cursor.saturating_sub(1),
+                KeyCode::Char('n') => {
+                    self.mode = Mode::Input {
+                        prompt: "path for the new worktree",
+                        buffer: String::new(),
+                        purpose: InputPurpose::AddWorktree,
+                    };
+                }
+                KeyCode::Char('d') => {
+                    let Some(w) = list.get(*cursor) else { return };
+                    if w.current {
+                        self.mode = Mode::Normal;
+                        self.message = "cannot remove the worktree you are in".into();
+                        self.message_ok = false;
+                        return;
+                    }
+                    let path = w.path.clone();
+                    self.mode = Mode::Confirm {
+                        prompt: format!("remove the worktree {path}? y/n"),
+                        action: ConfirmAction::RemoveWorktree(path),
+                    };
+                }
+                KeyCode::Enter => {
+                    let Some(w) = list.get(*cursor) else { return };
+                    let path = w.path.clone();
+                    self.mode = Mode::Normal;
+                    self.open_worktree(path);
+                }
+                _ => {}
+            },
             Mode::CommitMsg { summary, body, on_body, .. } => match key.code {
                 KeyCode::Esc => self.mode = Mode::Normal,
                 // Tab moves between the summary line and the body.
@@ -310,26 +367,65 @@ impl App {
                         ConfirmAction::DropStash(i) => svec(&["stash", "drop", &format!("stash@{{{i}}}")]),
                         ConfirmAction::Merge(name) => svec(&["merge", "--no-edit", &name]),
                         ConfirmAction::Revert(id) => svec(&["revert", "--no-edit", &id]),
+                        ConfirmAction::RemoveWorktree(path) => {
+                            svec(&["worktree", "remove", &path])
+                        }
                     };
                     self.write(args);
                 }
                 _ => self.mode = Mode::Normal,
             },
-            Mode::Hunks { header, hunks, cursor, .. } => match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => self.mode = Mode::Normal,
-                KeyCode::Char('j') | KeyCode::Down => *cursor = (*cursor + 1).min(hunks.len() - 1),
-                KeyCode::Char('k') | KeyCode::Up => *cursor = cursor.saturating_sub(1),
-                KeyCode::Char(' ') => {
-                    let patch = patch::hunk_patch(header, &hunks[*cursor]);
-                    // Line numbers of the other hunks change after the
-                    // apply. Leave the mode instead of a stale re-use.
-                    self.mode = Mode::Normal;
-                    if let Some(git) = &self.git {
-                        git.send(Req::ApplyPatch { patch, reverse: false });
+            Mode::Hunks { header, hunks, cursor, line, picked, .. } => {
+                let body_len = hunks[*cursor].lines().count().saturating_sub(1);
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') => self.mode = Mode::Normal,
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        *line = (*line + 1).min(body_len.saturating_sub(1))
                     }
+                    KeyCode::Char('k') | KeyCode::Up => *line = line.saturating_sub(1),
+                    // A move to another hunk drops the marked lines. They
+                    // point at the old hunk.
+                    KeyCode::Char('J') | KeyCode::Tab => {
+                        *cursor = (*cursor + 1).min(hunks.len() - 1);
+                        *line = 0;
+                        picked.clear();
+                    }
+                    KeyCode::Char('K') | KeyCode::BackTab => {
+                        *cursor = cursor.saturating_sub(1);
+                        *line = 0;
+                        picked.clear();
+                    }
+                    KeyCode::Char(' ') => {
+                        match picked.iter().position(|p| p == line) {
+                            Some(i) => {
+                                picked.remove(i);
+                            }
+                            None => picked.push(*line),
+                        }
+                        *line = (*line + 1).min(body_len.saturating_sub(1));
+                    }
+                    // Stage the whole hunk.
+                    KeyCode::Char('a') => {
+                        let patch = patch::hunk_patch(header, &hunks[*cursor]);
+                        self.apply_and_leave(patch);
+                    }
+                    // Stage the marked lines only.
+                    KeyCode::Enter => {
+                        let marks = if picked.is_empty() { vec![*line] } else { picked.clone() };
+                        match patch::subset_hunk(&hunks[*cursor], &marks) {
+                            Some(sub) => {
+                                let patch = patch::hunk_patch(header, &sub);
+                                self.apply_and_leave(patch);
+                            }
+                            None => {
+                                self.message = "mark a line that adds or removes text".into();
+                                self.message_ok = false;
+                            }
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
-            },
+            }
         }
     }
 
@@ -341,6 +437,12 @@ impl App {
             InputPurpose::NewBranch => svec(&["checkout", "-b", &buffer]),
             InputPurpose::RenameBranch(old) => svec(&["branch", "-m", &old, &buffer]),
             InputPurpose::StashMsg => svec(&["stash", "push", "-m", &buffer]),
+            // A new worktree needs a branch. Take the name of the last part
+            // of the path.
+            InputPurpose::AddWorktree => {
+                let name = buffer.rsplit('/').next().unwrap_or("work").to_string();
+                svec(&["worktree", "add", "-b", &name, &buffer])
+            }
         };
         self.write(args);
     }
@@ -391,6 +493,41 @@ impl App {
                 let editor = self.seq_editor_cmd(&msg_path);
                 self.run_rebase_with(items, base, vec![("GIT_EDITOR".into(), editor)]);
             }
+        }
+    }
+
+    /// Move the program to another worktree. The old workers stop when
+    /// their sender goes away. New workers start at the new directory.
+    fn open_worktree(&mut self, path: String) {
+        if let Err(e) = std::env::set_current_dir(&path) {
+            self.message = e.to_string();
+            self.message_ok = false;
+            return;
+        }
+        let Some(tx) = self.tx.clone() else { return };
+        match git::spawn(tx.clone()) {
+            Ok(git) => {
+                git::watch::spawn(git.git_dir.clone(), tx);
+                self.git = Some(git);
+                self.repo = RepoState::default();
+                self.selected = [0; 6];
+                self.tree.clear();
+                self.refresh_all();
+                self.log_cmd(true, format!("open worktree {path}"), 0, None);
+            }
+            Err(e) => {
+                self.message = e.to_string();
+                self.message_ok = false;
+            }
+        }
+    }
+
+    // Send the patch, then leave the hunk view. The line numbers of the
+    // other hunks change after the apply, thus they must not stay in use.
+    fn apply_and_leave(&mut self, patch: String) {
+        self.mode = Mode::Normal;
+        if let Some(git) = &self.git {
+            git.send(Req::ApplyPatch { patch, reverse: false });
         }
     }
 
@@ -595,7 +732,14 @@ impl App {
                 }
                 match patch::split_diff(&self.repo.diff) {
                     Some((header, hunks)) if !hunks.is_empty() => {
-                        self.mode = Mode::Hunks { path: f.path.clone(), header, hunks, cursor: 0 };
+                        self.mode = Mode::Hunks {
+                            path: f.path.clone(),
+                            header,
+                            hunks,
+                            cursor: 0,
+                            line: 0,
+                            picked: Vec::new(),
+                        };
                     }
                     _ => self.message = "no hunks in this file".into(),
                 }
@@ -655,6 +799,25 @@ impl App {
                     prompt: format!("merge {name} into {head}? y/n"),
                     action: ConfirmAction::Merge(name),
                 };
+            }
+
+            Action::CherryPick => {
+                if let Some(c) = self.repo.commits.get(self.selected[3]) {
+                    let id = c.id_str().to_string();
+                    self.write(svec(&["cherry-pick", "--no-commit", &id]));
+                }
+            }
+            Action::BisectBad | Action::BisectGood | Action::BisectSkip | Action::BisectReset => {
+                let id = self.repo.commits.get(self.selected[3]).map(|c| c.id_str().to_string());
+                if let Some(args) = bisect_command(self.repo.bisecting, &action, id.as_deref()) {
+                    self.write(args);
+                }
+            }
+
+            Action::Worktrees => {
+                if let Some(git) = &self.git {
+                    git.send(Req::Worktrees);
+                }
             }
 
             Action::RewordCommit => {
@@ -766,6 +929,7 @@ impl App {
                 self.repo.behind = behind;
                 self.repo.unpushed = unpushed;
             }
+            Resp::Worktrees(list) => self.mode = Mode::Worktrees { list, cursor: 0 },
         }
     }
 
@@ -794,6 +958,7 @@ impl App {
         self.diff_target = None;
         let dir = self.git.as_ref().map(|g| g.git_dir.clone());
         self.rebase = dir.as_deref().and_then(rebase::detect);
+        self.repo.bisecting = dir.as_deref().is_some_and(rebase::bisecting);
     }
 
     /// Send the requests that the new state makes necessary. The main loop
@@ -824,6 +989,21 @@ impl App {
 
 fn svec(args: &[&str]) -> Vec<String> {
     args.iter().map(|s| s.to_string()).collect()
+}
+
+/// The git arguments for a bisect key. None means the key does nothing.
+/// Before a bisect runs, only the good and the bad key can start one.
+fn bisect_command(bisecting: bool, action: &Action, id: Option<&str>) -> Option<Vec<String>> {
+    Some(match (action, bisecting) {
+        (Action::BisectBad, true) => svec(&["bisect", "bad"]),
+        (Action::BisectGood, true) => svec(&["bisect", "good"]),
+        (Action::BisectSkip, true) => svec(&["bisect", "skip"]),
+        (Action::BisectReset, true) => svec(&["bisect", "reset"]),
+        // The bad commit starts the bisect. Git then needs a good one.
+        (Action::BisectBad, false) => svec(&["bisect", "start", id?]),
+        (Action::BisectGood, false) => svec(&["bisect", "good", id?]),
+        _ => return None,
+    })
 }
 
 #[cfg(test)]
@@ -996,6 +1176,62 @@ mod tests {
         });
         assert!(app.message.is_empty());
         assert!(app.cmd_log[1].err.is_none());
+    }
+
+    #[test]
+    fn hunk_view_marks_lines() {
+        let mut app = demo();
+        app.mode = Mode::Hunks {
+            path: "src/app.rs".into(),
+            header: "diff --git a/src/app.rs b/src/app.rs\n".into(),
+            hunks: vec!["@@ -1,2 +1,3 @@\n keep\n-old line\n+new line\n".into()],
+            cursor: 0,
+            line: 1,
+            picked: vec![1],
+        };
+        insta::assert_snapshot!(draw(&app, 100, 24).backend());
+    }
+
+    #[test]
+    fn worktree_list() {
+        let mut app = demo();
+        app.mode = Mode::Worktrees {
+            list: vec![
+                WorktreeEntry { path: "/home/max/lazier".into(), branch: "main".into(), current: true },
+                WorktreeEntry { path: "/home/max/lazier-fix".into(), branch: "fix/x".into(), current: false },
+            ],
+            cursor: 1,
+        };
+        insta::assert_snapshot!(draw(&app, 100, 24).backend());
+    }
+
+    // Before a bisect runs, skip and reset must do nothing. The bad key
+    // starts the bisect. During a bisect the keys need no commit id.
+    #[test]
+    fn bisect_keys_need_a_running_bisect() {
+        let id = Some("abc1234");
+        assert_eq!(bisect_command(false, &Action::BisectSkip, id), None);
+        assert_eq!(bisect_command(false, &Action::BisectReset, id), None);
+        assert_eq!(
+            bisect_command(false, &Action::BisectBad, id),
+            Some(svec(&["bisect", "start", "abc1234"]))
+        );
+        assert_eq!(
+            bisect_command(true, &Action::BisectBad, None),
+            Some(svec(&["bisect", "bad"]))
+        );
+        assert_eq!(
+            bisect_command(true, &Action::BisectReset, None),
+            Some(svec(&["bisect", "reset"]))
+        );
+        // With no commit in the list, a bisect cannot start.
+        assert_eq!(bisect_command(false, &Action::BisectBad, None), None);
+    }
+
+    #[test]
+    fn the_current_branch_is_first() {
+        let app = demo();
+        assert!(app.repo.branches[0].current);
     }
 
     #[test]

@@ -66,6 +66,14 @@ pub enum Req {
     Sync,
     /// Read the full message of a commit, for the reword window.
     ReadMessage { id: String, index: usize },
+    /// List the worktrees of the repository.
+    Worktrees,
+}
+
+pub struct WorktreeEntry {
+    pub path: String,
+    pub branch: String,
+    pub current: bool,
 }
 
 #[derive(PartialEq, Clone)]
@@ -83,6 +91,7 @@ pub enum Resp {
     WriteDone { ok: bool, cmd: String, msg: String, ms: u64 },
     Sync { ahead: u32, behind: u32, unpushed: std::collections::HashSet<String> },
     Message { text: String, index: usize },
+    Worktrees(Vec<WorktreeEntry>),
 }
 
 pub struct Git {
@@ -151,6 +160,7 @@ pub fn spawn(event_tx: Sender<Msg>) -> anyhow::Result<Git> {
                 Req::Write(args) => Some(run_git(&worker_root, &args)),
                 Req::ApplyPatch { patch, reverse } => Some(apply_patch(&worker_root, &patch, reverse)),
                 Req::Sync => Some(sync_state(&worker_root)),
+                Req::Worktrees => Some(Resp::Worktrees(worktrees(&worker_root))),
                 Req::ReadMessage { id, index } => {
                     let out = Command::new("git")
                         .arg("-C")
@@ -246,7 +256,7 @@ fn branches(root: &PathBuf) -> Vec<BranchEntry> {
         ])
         .output();
     let Ok(out) = out else { return Vec::new() };
-    String::from_utf8_lossy(&out.stdout)
+    let mut list: Vec<BranchEntry> = String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter_map(|line| {
             let mut parts = line.split('\t');
@@ -262,7 +272,45 @@ fn branches(root: &PathBuf) -> Vec<BranchEntry> {
                 gone: track.contains("gone"),
             })
         })
-        .collect()
+        .collect();
+    // The branch you are on goes first. The others keep the recency order.
+    if let Some(i) = list.iter().position(|b| b.current) {
+        let current = list.remove(i);
+        list.insert(0, current);
+    }
+    list
+}
+
+/// List the worktrees. The output has one block for each worktree. A block
+/// has a "worktree" line and often a "branch" line.
+fn worktrees(root: &PathBuf) -> Vec<WorktreeEntry> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["worktree", "list", "--porcelain"])
+        .output();
+    let Ok(out) = out else { return Vec::new() };
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    // Compare real paths. A symbolic link makes two names for one directory.
+    let here = root.canonicalize().unwrap_or_else(|_| root.clone());
+    let mut list = Vec::new();
+    for block in text.split("\n\n") {
+        let mut path = String::new();
+        let mut branch = String::from("(detached)");
+        for line in block.lines() {
+            if let Some(p) = line.strip_prefix("worktree ") {
+                path = p.to_string();
+            } else if let Some(b) = line.strip_prefix("branch ") {
+                branch = b.trim_start_matches("refs/heads/").to_string();
+            }
+        }
+        if !path.is_empty() {
+            let real = PathBuf::from(&path);
+            let current = real.canonicalize().unwrap_or(real) == here;
+            list.push(WorktreeEntry { path, branch, current });
+        }
+    }
+    list
 }
 
 fn track_count(track: &str, word: &str) -> u32 {

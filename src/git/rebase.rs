@@ -57,6 +57,12 @@ pub struct RebaseInfo {
     pub total: usize,
 }
 
+/// True while a bisect runs. Git makes this file when a bisect starts and
+/// removes it at the reset.
+pub fn bisecting(git_dir: &Path) -> bool {
+    git_dir.join("BISECT_LOG").is_file()
+}
+
 fn num(path: PathBuf) -> Option<usize> {
     std::fs::read_to_string(path).ok()?.trim().parse().ok()
 }
