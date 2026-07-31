@@ -25,9 +25,6 @@ lazier uses the least memory in each test. gitui starts more quickly on the
 kernel repository, but it needs 3.8 times more memory: it reads the whole
 object database, and lazier reads only the parts it must show.
 
-Make the numbers again with `bench/setup.sh linux` then
-`LAZIER=lazier bench/run.sh`.
-
 **Why it is fast.** lazygit starts a `git` process for each read and parses
 the text. lazier reads the repository in its own process with gitoxide.
 Worker threads do all git work, thus the screen never waits. A list shows
