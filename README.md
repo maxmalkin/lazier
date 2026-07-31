@@ -1,165 +1,80 @@
 # lazier
 
-A terminal user interface for git. It is written in Rust with
-[ratatui](https://ratatui.rs) and [gitoxide](https://github.com/GitoxideLabs/gitoxide).
+A fast terminal user interface for git. Rust, [ratatui](https://ratatui.rs),
+and [gitoxide](https://github.com/GitoxideLabs/gitoxide).
 
-lazier does the same daily work as [lazygit](https://github.com/jesseduffield/lazygit),
-but it uses less memory and less processor time on a large repository.
-
-## Why it is fast
-
-lazygit starts a `git` process for each read, then reads the text output.
-lazier reads the repository in its own process with gitoxide. There is no
-process to start and no text to parse.
-
-Three more rules keep the program quick:
-
-- The user interface thread does no git work. Worker threads do all reads.
-  They send the results through one channel.
-- The main loop waits on that channel. The program uses no processor time
-  when you do not touch a key.
-- A list shows only the rows in view. A repository with one million commits
-  uses the same memory as a small one.
-
-Writes are different. A write goes to the `git` command. Your hooks, your
-credential helper, and your GPG key continue to work.
+It does the daily work of [lazygit](https://github.com/jesseduffield/lazygit)
+with less memory and less processor time.
 
 ## Speed and memory
 
-Apple Silicon, macOS, git 2.50.1. lazygit 0.61.1, gitui 0.28.1, lazier 0.1.0.
-Each program starts in a real terminal of 80 by 24, draws its first screen,
-then quits. Less is better in each column.
+Apple Silicon, macOS. lazygit 0.61.1, gitui 0.28.1, lazier 0.1.0. Each
+program starts, draws its first screen, then quits. Less is better.
 
-**A repository with 10 000 changed files**
+| Test | | lazygit | gitui | lazier |
+|------|---|--------:|------:|-------:|
+| 10 000 changed files | processor | 721 ms | 150 ms | **163 ms** |
+| | memory | 49 MB | 25 MB | **16 MB** |
+| Linux kernel, 1.3M commits | start | 1963 ms | 732 ms | **1247 ms** |
+| | scroll 300 | 2556 ms | 939 ms | **1232 ms** |
+| | memory | 135 MB | 303 MB | **79 MB** |
+| Idle | processor | 0.0 % | 0.9 % | **0.0 %** |
+| Program file | | 17 MB | 9.5 MB | **3.4 MB** |
 
-| Program | Processor time | Memory |
-|---------|---------------:|-------:|
-| lazygit | 721 ms | 49 MB |
-| gitui | 150 ms | 25 MB |
-| **lazier** | **163 ms** | **16 MB** |
+lazier uses the least memory in each test. gitui starts more quickly on the
+kernel repository, but it needs 3.8 times more memory: it reads the whole
+object database, and lazier reads only the parts it must show.
 
-**The Linux kernel repository, 1.3 million commits**
+Make the numbers again with `bench/setup.sh linux` then
+`LAZIER=lazier bench/run.sh`.
 
-| Program | Start | Scroll 300 commits | Memory |
-|---------|------:|-------------------:|-------:|
-| lazygit | 1963 ms | 2556 ms | 135 MB |
-| gitui | 732 ms | 939 ms | 303 MB |
-| **lazier** | **1247 ms** | **1232 ms** | **79 MB** |
-
-**Processor time when you touch no key**
-
-| Program | Idle |
-|---------|-----:|
-| lazygit | 0.0 % |
-| gitui | 0.9 % |
-| **lazier** | **0.0 %** |
-
-Program file size: lazier 3.4 MB, gitui 9.5 MB, lazygit 17 MB.
-
-What the numbers say:
-
-- lazier uses the least memory in each test. On the kernel repository it uses
-  1.7 times less than lazygit and 3.8 times less than gitui.
-- lazier uses 4.4 times less processor time than lazygit on 10 000 changed
-  files, and about 2 times less on a scroll through the kernel history.
-- gitui is quicker than lazier to start on the kernel repository, but it
-  needs 3.8 times more memory. It reads the whole object database at the
-  start. lazier reads only the parts it must show.
-
-Note on the clock: all three programs show their first screen in well under
-one second, thus wall-clock times are almost equal. Processor time and memory
-are the numbers that separate them.
-
-To make these numbers again on your machine:
-
-```sh
-bench/setup.sh linux          # this downloads about 1.5 GB
-LAZIER=lazier bench/run.sh
-```
+**Why it is fast.** lazygit starts a `git` process for each read and parses
+the text. lazier reads the repository in its own process with gitoxide.
+Worker threads do all git work, thus the screen never waits. A list shows
+only the rows in view. Writes still go to the `git` command, thus your
+hooks, credential helper, and GPG key continue to work.
 
 ## Install
 
-### From the source
-
-You need Rust 1.85 or later.
+From the source, with Rust 1.85 or later:
 
 ```sh
 cargo install --git https://github.com/maxmalkin/lazier
 ```
 
-Or clone the repository first:
+Or take an archive for your platform from the
+[releases page](https://github.com/maxmalkin/lazier/releases), then:
 
 ```sh
-git clone https://github.com/maxmalkin/lazier
-cd lazier
-cargo install --path .
-```
-
-### From a release
-
-Get the archive for your platform from the
-[releases page](https://github.com/maxmalkin/lazier/releases). Then put the
-program on your path:
-
-```sh
-tar -xzf lazier-<target>.tar.gz
-sudo mv lazier /usr/local/bin/
+tar -xzf lazier-<target>.tar.gz && sudo mv lazier /usr/local/bin/
 ```
 
 ## Use
 
-Start the program in a git repository:
+Run `lazier` in a git repository. Press `?` for all keys. The bar at the
+bottom shows the keys for the panel in focus.
 
-```sh
-lazier
-```
+| Key | Panel |
+|-----|-------|
+| `1` `2` `3` `4` `5` | Status, Files, Branches, Commits, Stash |
+| `0` | Diff |
+| `@` | Command log, with the result and the time of each command |
 
-Press `?` for the full list of keys. The bar at the bottom always shows the
-keys for the panel in focus.
+Move with `j` and `k`, `ctrl-d` and `ctrl-u`, `g` and `G`.
 
-### Panels
+- **Files.** `space` stage · `a` stage all · `enter` hunks, or fold a
+  directory · `c` commit window · `C` your editor · `s` stash · `o` `t` take
+  ours or theirs
+- **Branches.** `enter` check out · `n` new · `d` `D` delete · `R` rename ·
+  `m` merge · `P` `p` `f` push, pull, fetch
+- **Commits.** `enter` graph view · `i` interactive rebase · `w` reword ·
+  `v` revert · `↑` marks a commit the upstream branch does not have
+- **Rebase.** `p` `r` `e` `s` `f` `d` set the action · `J` `K` move a commit
+  · `enter` run. If it stops: `c` continue · `s` skip · `A` abort
 
-| Key | Panel | What it shows |
-|-----|-------|---------------|
-| `1` | Status | The branch, and how far it is from the upstream branch |
-| `2` | Files | The changed files as a tree |
-| `3` | Branches | The branches, the newest first, with `↑` and `↓` counts |
-| `4` | Commits | The commit graph |
-| `5` | Stash | The stash entries |
-| `0` | Diff | The diff of the selected file or commit |
-| `@` | Command log | Each git command, its result, and its time |
+## Not there yet
 
-### Keys
-
-Move with `j` and `k`. Move one page with `ctrl-d` and `ctrl-u`. Go to the
-top or the end with `g` and `G`. Change the panel with `tab` or with the
-number keys.
-
-**Files.** Press `space` to stage or unstage a file or a directory. Press `a`
-to stage all files. Press `enter` on a file to stage its hunks one at a time.
-Press `enter` on a directory to fold it. Press `c` to open the commit window.
-Press `C` to write the message in your editor. Press `s` to make a stash.
-Press `o` or `t` to take ours or theirs in a conflict.
-
-**Branches.** Press `enter` to check out. Press `n` for a new branch. Press
-`d` to delete, or `D` to delete by force. Press `R` for a new name. Press `m`
-to merge the branch into the current one. Press `P`, `p`, or `f` to push,
-pull, or fetch.
-
-**Commits.** Press `enter` for the full graph view. Press `i` to start an
-interactive rebase. Press `w` to give the commit a new message. Press `v` to
-revert it. An `↑` marks a commit that the upstream branch does not have.
-
-**Interactive rebase.** Set an action on each commit with `p`, `r`, `e`, `s`,
-`f`, or `d`. Move a commit with `J` and `K`. Press `enter` to run the rebase.
-If the rebase stops, press `c` to continue, `s` to skip, or `A` to abort.
-
-## What is not there yet
-
-- Staging one line, not the full hunk
-- Custom patches from an old commit
-- Bisect and worktrees
-- A configuration file
+Staging one line · custom patches · bisect · worktrees · a configuration file
 
 ## License
 
