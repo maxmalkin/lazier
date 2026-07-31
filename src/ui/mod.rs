@@ -7,7 +7,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 
-use crate::app::{App, Mode};
+use crate::app::{App, CommitPurpose, Mode};
 
 const KEY: Style = Style::new().fg(Color::Yellow);
 const DESC: Style = Style::new().fg(Color::Gray);
@@ -44,8 +44,8 @@ pub fn render(frame: &mut Frame, app: &App) {
     render_bar(frame, bar, app);
     match &app.mode {
         Mode::Help => render_help(frame, body),
-        Mode::CommitMsg { summary, body: text, on_body } => {
-            render_commit(frame, body, summary, text, *on_body)
+        Mode::CommitMsg { summary, body: text, on_body, purpose } => {
+            render_commit(frame, body, summary, text, *on_body, purpose)
         }
         _ => {}
     }
@@ -65,11 +65,23 @@ fn centered(area: Rect, w: u16, h: u16) -> Rect {
 
 /// The commit message window. The summary line is on top. The body is
 /// below it. Tab moves between them.
-fn render_commit(frame: &mut Frame, body_area: Rect, summary: &str, body: &str, on_body: bool) {
+fn render_commit(
+    frame: &mut Frame,
+    body_area: Rect,
+    summary: &str,
+    body: &str,
+    on_body: bool,
+    purpose: &CommitPurpose,
+) {
     let area = centered(body_area, 72, 14);
     frame.render_widget(Clear, area);
+    let title = match purpose {
+        CommitPurpose::New => " Commit ",
+        CommitPurpose::Reword(0) => " Reword HEAD ",
+        CommitPurpose::Reword(_) => " Reword (runs a rebase) ",
+    };
     let outer = Block::bordered()
-        .title(Span::styled(" Commit ", Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)))
+        .title(Span::styled(title, Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)))
         .border_style(Style::new().fg(Color::Cyan));
     let inner = outer.inner(area);
     frame.render_widget(outer, area);
@@ -108,10 +120,10 @@ fn render_commit(frame: &mut Frame, body_area: Rect, summary: &str, body: &str, 
         ),
         mid,
     );
-    let keys: Hints = if on_body {
-        &[("enter", "new line"), ("tab", "summary"), ("esc", "cancel")]
-    } else {
-        &[("enter", "commit"), ("tab", "body"), ("esc", "cancel")]
+    let keys: Hints = match (on_body, purpose) {
+        (true, _) => &[("enter", "new line"), ("tab", "summary"), ("esc", "cancel")],
+        (false, CommitPurpose::New) => &[("enter", "commit"), ("tab", "body"), ("esc", "cancel")],
+        (false, _) => &[("enter", "reword"), ("tab", "body"), ("esc", "cancel")],
     };
     frame.render_widget(hint_line(&[keys]), hint);
 }
@@ -132,12 +144,12 @@ const HINTS: [Hints; 6] = [
     &[
         ("enter", "checkout"),
         ("n", "new"),
-        ("d", "delete"),
-        ("P", "push"),
-        ("p", "pull"),
-        ("f", "fetch"),
+        ("d/D", "delete"),
+        ("R", "rename"),
+        ("m", "merge"),
+        ("P/p/f", "push/pull/fetch"),
     ],
-    &[("enter", "zoom"), ("i", "rebase"), ("g/G", "top/bottom"), ("ctrl-d/u", "page")],
+    &[("enter", "zoom"), ("i", "rebase"), ("w", "reword"), ("v", "revert"), ("g/G", "top/bottom")],
     &[("enter/a", "apply"), ("p", "pop"), ("d", "drop")],
     &[("j/k", "scroll"), ("g/G", "top/bottom")],
 ];
@@ -242,7 +254,10 @@ const HELP: &[(&str, Hints)] = &[
         "Branches [3]",
         &[
             ("enter", "check out the branch"),
-            ("n / d", "make a new branch, or delete this one"),
+            ("n", "make a new branch"),
+            ("d / D", "delete it, or delete it by force"),
+            ("R", "give the branch a new name"),
+            ("m", "merge the branch into the current one"),
             ("P / p / f", "push, pull, or fetch"),
             ("● ↑ ↓", "current branch, to push, to pull"),
         ],
@@ -260,6 +275,8 @@ const HELP: &[(&str, Hints)] = &[
         &[
             ("enter", "open the full graph view"),
             ("i", "start an interactive rebase here"),
+            ("w", "give the commit a new message"),
+            ("v", "revert the commit"),
             ("↑", "this commit is not on the upstream branch"),
         ],
     ),

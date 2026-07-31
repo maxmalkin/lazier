@@ -64,6 +64,8 @@ pub enum Req {
     ApplyPatch { patch: String, reverse: bool },
     /// Read the sync state against the upstream branch.
     Sync,
+    /// Read the full message of a commit, for the reword window.
+    ReadMessage { id: String, index: usize },
 }
 
 #[derive(PartialEq, Clone)]
@@ -78,8 +80,9 @@ pub enum Resp {
     Stashes(Vec<String>),
     LogChunk { entries: Vec<CommitEntry>, done: bool },
     Diff { seq: u64, text: String },
-    WriteDone { ok: bool, msg: String },
+    WriteDone { ok: bool, cmd: String, msg: String, ms: u64 },
     Sync { ahead: u32, behind: u32, unpushed: std::collections::HashSet<String> },
+    Message { text: String, index: usize },
 }
 
 pub struct Git {
@@ -148,6 +151,19 @@ pub fn spawn(event_tx: Sender<Msg>) -> anyhow::Result<Git> {
                 Req::Write(args) => Some(run_git(&worker_root, &args)),
                 Req::ApplyPatch { patch, reverse } => Some(apply_patch(&worker_root, &patch, reverse)),
                 Req::Sync => Some(sync_state(&worker_root)),
+                Req::ReadMessage { id, index } => {
+                    let out = Command::new("git")
+                        .arg("-C")
+                        .arg(&worker_root)
+                        .args(["log", "-1", "--format=%B", &id])
+                        .output();
+                    let text = out
+                        .ok()
+                        .filter(|o| o.status.success())
+                        .map(|o| String::from_utf8_lossy(&o.stdout).trim_end().to_string())
+                        .unwrap_or_default();
+                    Some(Resp::Message { text, index })
+                }
                 Req::LogChunk { .. } | Req::LogReset => None,
             };
             if let Some(resp) = resp
@@ -162,22 +178,29 @@ pub fn spawn(event_tx: Sender<Msg>) -> anyhow::Result<Git> {
 }
 
 fn run_git(root: &PathBuf, args: &[String]) -> Resp {
-    match Command::new("git").arg("-C").arg(root).args(args).output() {
+    let cmd = format!("git {}", args.join(" "));
+    let start = std::time::Instant::now();
+    let result = Command::new("git").arg("-C").arg(root).args(args).output();
+    let ms = start.elapsed().as_millis() as u64;
+    match result {
         Ok(out) => {
             let ok = out.status.success();
             let text = if ok { &out.stdout } else { &out.stderr };
             let msg = String::from_utf8_lossy(text).lines().next().unwrap_or("done").to_string();
-            Resp::WriteDone { ok, msg: format!("git {}: {msg}", args.first().map(String::as_str).unwrap_or("")) }
+            let verb = args.first().map(String::as_str).unwrap_or("");
+            Resp::WriteDone { ok, cmd, msg: format!("git {verb}: {msg}"), ms }
         }
-        Err(e) => Resp::WriteDone { ok: false, msg: e.to_string() },
+        Err(e) => Resp::WriteDone { ok: false, cmd, msg: e.to_string(), ms },
     }
 }
 
 fn apply_patch(root: &PathBuf, patch: &str, reverse: bool) -> Resp {
+    let start = std::time::Instant::now();
     let mut args = vec!["apply", "--cached"];
     if reverse {
         args.push("-R");
     }
+    let cmd = format!("git {}", args.join(" "));
     let child = Command::new("git")
         .arg("-C")
         .arg(root)
@@ -185,19 +208,26 @@ fn apply_patch(root: &PathBuf, patch: &str, reverse: bool) -> Resp {
         .stdin(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn();
-    match child {
+    let out = match child {
         Ok(mut child) => {
             let _ = child.stdin.take().unwrap().write_all(patch.as_bytes());
-            match child.wait_with_output() {
-                Ok(out) if out.status.success() => {
-                    let verb = if reverse { "unstaged" } else { "staged" };
-                    Resp::WriteDone { ok: true, msg: format!("hunk {verb}") }
-                }
-                Ok(out) => Resp::WriteDone { ok: false, msg: String::from_utf8_lossy(&out.stderr).trim().to_string() },
-                Err(e) => Resp::WriteDone { ok: false, msg: e.to_string() },
-            }
+            child.wait_with_output().map_err(|e| e.to_string())
         }
-        Err(e) => Resp::WriteDone { ok: false, msg: e.to_string() },
+        Err(e) => Err(e.to_string()),
+    };
+    let ms = start.elapsed().as_millis() as u64;
+    match out {
+        Ok(out) if out.status.success() => {
+            let verb = if reverse { "unstaged" } else { "staged" };
+            Resp::WriteDone { ok: true, cmd, msg: format!("hunk {verb}"), ms }
+        }
+        Ok(out) => Resp::WriteDone {
+            ok: false,
+            cmd,
+            msg: String::from_utf8_lossy(&out.stderr).trim().to_string(),
+            ms,
+        },
+        Err(e) => Resp::WriteDone { ok: false, cmd, msg: e, ms },
     }
 }
 

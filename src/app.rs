@@ -40,12 +40,30 @@ pub struct RepoState {
 
 pub enum InputPurpose {
     NewBranch,
+    RenameBranch(String),
     StashMsg,
 }
 
+/// What the commit window does when the user sends it.
+pub enum CommitPurpose {
+    /// Make a new commit from the staged changes.
+    New,
+    /// Change the message of the commit at this position in the list.
+    /// Position zero is HEAD, which needs only an amend.
+    Reword(usize),
+}
+
+pub struct LogEntry {
+    pub ok: bool,
+    pub cmd: String,
+    pub ms: u64,
+}
+
 pub enum ConfirmAction {
-    DeleteBranch(String),
+    DeleteBranch { name: String, force: bool },
     DropStash(usize),
+    Merge(String),
+    Revert(String),
 }
 
 pub enum Mode {
@@ -55,7 +73,7 @@ pub enum Mode {
     Hunks { path: String, header: String, hunks: Vec<String>, cursor: usize },
     Help,
     /// The commit message window. It has a summary line and a body.
-    CommitMsg { summary: String, body: String, on_body: bool },
+    CommitMsg { summary: String, body: String, on_body: bool, purpose: CommitPurpose },
     /// The todo list editor of an interactive rebase. `base` is the commit
     /// that the rebase starts from. None means the rebase starts at the root.
     Rebase { items: Vec<TodoItem>, cursor: usize, base: Option<String> },
@@ -76,7 +94,7 @@ pub struct App {
     diff_lines: u16,
     pub tree: Vec<TreeRow>,
     pub collapsed: HashSet<String>,
-    pub cmd_log: Vec<(bool, String)>,
+    pub cmd_log: Vec<LogEntry>,
     pub show_log: bool,
     pub rebase: Option<RebaseInfo>,
     git: Option<Git>,
@@ -148,6 +166,7 @@ impl App {
     ) -> Result<()> {
         let Some(git) = &self.git else { return Ok(()) };
         self.pause.store(true, Ordering::Relaxed);
+        let start = std::time::Instant::now();
         disable_raw_mode()?;
         execute!(std::io::stdout(), LeaveAlternateScreen)?;
         let status = std::process::Command::new("git")
@@ -162,13 +181,12 @@ impl App {
         self.pause.store(false, Ordering::Relaxed);
         self.message_ok = matches!(&status, Ok(s) if s.success());
         self.message = match status {
-            Ok(s) if s.success() => format!("git {} done", args.join(" ")),
+            Ok(s) if s.success() => String::new(),
             Ok(s) => format!("git {} failed ({s})", args.join(" ")),
             Err(e) => e.to_string(),
         };
-        let ok = self.message_ok;
-        let msg = self.message.clone();
-        self.log_cmd(ok, msg);
+        let (ok, ms) = (self.message_ok, start.elapsed().as_millis() as u64);
+        self.log_cmd(ok, format!("git {}", args.join(" ")), ms);
         self.refresh_all();
         Ok(())
     }
@@ -204,7 +222,7 @@ impl App {
                 }
             }
             Mode::Help => self.mode = Mode::Normal,
-            Mode::CommitMsg { summary, body, on_body } => match key.code {
+            Mode::CommitMsg { summary, body, on_body, .. } => match key.code {
                 KeyCode::Esc => self.mode = Mode::Normal,
                 // Tab moves between the summary line and the body.
                 KeyCode::Tab | KeyCode::BackTab => *on_body = !*on_body,
@@ -217,12 +235,12 @@ impl App {
                 // line it sends the commit.
                 KeyCode::Enter if *on_body => body.push('\n'),
                 KeyCode::Enter => {
-                    let Mode::CommitMsg { summary, body, .. } =
+                    let Mode::CommitMsg { summary, body, purpose, .. } =
                         std::mem::replace(&mut self.mode, Mode::Normal)
                     else {
                         return;
                     };
-                    self.submit_commit(summary, body);
+                    self.submit_commit(summary, body, purpose);
                 }
                 KeyCode::Char(c) => {
                     if *on_body { body.push(c) } else { summary.push(c) }
@@ -282,8 +300,14 @@ impl App {
                         return;
                     };
                     let args: Vec<String> = match action {
-                        ConfirmAction::DeleteBranch(name) => svec(&["branch", "-D", &name]),
+                        // A plain delete refuses a branch that is not
+                        // merged. The force delete does not refuse.
+                        ConfirmAction::DeleteBranch { name, force } => {
+                            svec(&["branch", if force { "-D" } else { "-d" }, &name])
+                        }
                         ConfirmAction::DropStash(i) => svec(&["stash", "drop", &format!("stash@{{{i}}}")]),
+                        ConfirmAction::Merge(name) => svec(&["merge", "--no-edit", &name]),
+                        ConfirmAction::Revert(id) => svec(&["revert", "--no-edit", &id]),
                     };
                     self.write(args);
                 }
@@ -313,6 +337,7 @@ impl App {
         }
         let args: Vec<String> = match purpose {
             InputPurpose::NewBranch => svec(&["checkout", "-b", &buffer]),
+            InputPurpose::RenameBranch(old) => svec(&["branch", "-m", &old, &buffer]),
             InputPurpose::StashMsg => svec(&["stash", "push", "-m", &buffer]),
         };
         self.write(args);
@@ -320,22 +345,89 @@ impl App {
 
     /// Commit with the summary and the body. Git puts an empty line between
     /// two message parts, thus the body becomes a real commit body.
-    fn submit_commit(&mut self, summary: String, body: String) {
-        if summary.is_empty() {
+    fn submit_commit(&mut self, summary: String, body: String, purpose: CommitPurpose) {
+        if summary.trim().is_empty() {
             self.message = "the summary must have text".into();
             self.message_ok = false;
             return;
         }
-        let mut args = svec(&["commit", "-m", &summary]);
-        if !body.trim().is_empty() {
-            args.push("-m".into());
-            args.push(body);
+        let msg_args = |verb: &str| {
+            let mut args = svec(&[verb, "-m", &summary]);
+            if !body.trim().is_empty() {
+                args.push("-m".into());
+                args.push(body.clone());
+            }
+            args
+        };
+        match purpose {
+            CommitPurpose::New => self.write(msg_args("commit")),
+            // HEAD needs only an amend. No rebase runs.
+            CommitPurpose::Reword(0) => {
+                let mut args = msg_args("commit");
+                args.insert(1, "--amend".into());
+                self.write(args);
+            }
+            // An older commit needs a rebase with one reword step. Git asks
+            // this program for both the todo list and the new message.
+            CommitPurpose::Reword(index) => {
+                let Some(git) = &self.git else { return };
+                let mut text = summary.clone();
+                if !body.trim().is_empty() {
+                    text.push_str("\n\n");
+                    text.push_str(body.trim_end());
+                }
+                text.push('\n');
+                let msg_path = git.git_dir.join("lazier-msg");
+                if let Err(e) = std::fs::write(&msg_path, text) {
+                    self.message = e.to_string();
+                    self.message_ok = false;
+                    return;
+                }
+                let Some((mut items, base)) = self.rebase_slice(index) else { return };
+                // The target is the oldest commit in the list.
+                items[index].action = TodoAction::Reword;
+                let editor = self.seq_editor_cmd(&msg_path);
+                self.run_rebase_with(items, base, vec![("GIT_EDITOR".into(), editor)]);
+            }
         }
-        self.write(args);
+    }
+
+    /// Build the todo items for the commits from HEAD down to `index`, and
+    /// the commit that the rebase starts from.
+    fn rebase_slice(&mut self, index: usize) -> Option<(Vec<TodoItem>, Option<String>)> {
+        let last = self.repo.commits.get(index)?;
+        let base = if index + 1 < self.repo.commits.len() {
+            Some(format!("{}^", last.id_str()))
+        } else if self.repo.log_done {
+            None // The oldest commit is a root commit.
+        } else {
+            self.message = "load more commits first".into();
+            self.message_ok = false;
+            return None;
+        };
+        let items = self.repo.commits[..=index]
+            .iter()
+            .map(|c| TodoItem {
+                action: TodoAction::Pick,
+                id: c.id_str().to_string(),
+                subject: c.subject.to_string(),
+            })
+            .collect();
+        Some((items, base))
+    }
+
+    /// The command line that makes git call this program as an editor. The
+    /// program copies `file` over the file that git wants edited.
+    fn seq_editor_cmd(&self, file: &std::path::Path) -> String {
+        let exe = std::env::current_exe().unwrap_or_default();
+        format!(
+            "{} --seq-editor {}",
+            rebase::sh_quote(&exe.to_string_lossy()),
+            rebase::sh_quote(&file.to_string_lossy())
+        )
     }
 
     fn write(&mut self, args: Vec<String>) {
-        self.log_cmd(true, format!("→ git {}", args.join(" ")));
         if let Some(git) = &self.git {
             git.send(Req::Write(args));
         }
@@ -344,40 +436,30 @@ impl App {
     /// Run a git command with the real terminal. Use it for a command that
     /// asks the user something, for example a password or a commit message.
     fn suspend(&mut self, args: Vec<String>) {
-        self.log_cmd(true, format!("→ git {}", args.join(" ")));
         self.pending_suspend = Some((args, Vec::new()));
     }
 
     /// Open the todo editor for the commits above the selected one. The
     /// selected commit is the oldest commit in the list.
     fn start_rebase(&mut self) {
-        let sel = self.selected[3];
-        let Some(last) = self.repo.commits.get(sel) else { return };
-        // A rebase cannot start below a commit that is not loaded yet.
-        let base = if sel + 1 < self.repo.commits.len() {
-            Some(format!("{}^", last.id_str()))
-        } else if self.repo.log_done {
-            None // The oldest commit is a root commit.
-        } else {
-            self.message = "load more commits first".into();
-            self.message_ok = false;
-            return;
-        };
-        let items = self.repo.commits[..=sel]
-            .iter()
-            .map(|c| TodoItem {
-                action: TodoAction::Pick,
-                id: c.id_str().to_string(),
-                subject: c.subject.to_string(),
-            })
-            .collect();
-        self.mode = Mode::Rebase { items, cursor: 0, base };
+        if let Some((items, base)) = self.rebase_slice(self.selected[3]) {
+            self.mode = Mode::Rebase { items, cursor: 0, base };
+        }
     }
 
     /// Write the todo list, then run the rebase with the real terminal.
     /// Git calls this program as the sequence editor, thus git shows no
     /// editor for the todo list. A reword step still opens the user editor.
     fn run_rebase(&mut self, items: Vec<TodoItem>, base: Option<String>) {
+        self.run_rebase_with(items, base, Vec::new());
+    }
+
+    fn run_rebase_with(
+        &mut self,
+        items: Vec<TodoItem>,
+        base: Option<String>,
+        mut envs: Vec<(String, String)>,
+    ) {
         let Some(git) = &self.git else { return };
         let todo_path = git.git_dir.join("lazier-todo");
         if let Err(e) = std::fs::write(&todo_path, rebase::serialize(&items)) {
@@ -385,23 +467,16 @@ impl App {
             self.message_ok = false;
             return;
         }
-        let Ok(exe) = std::env::current_exe() else { return };
-        let editor = format!(
-            "{} --seq-editor {}",
-            rebase::sh_quote(&exe.to_string_lossy()),
-            rebase::sh_quote(&todo_path.to_string_lossy())
-        );
+        envs.push(("GIT_SEQUENCE_EDITOR".into(), self.seq_editor_cmd(&todo_path)));
         let args = match &base {
             Some(b) => svec(&["rebase", "-i", b]),
             None => svec(&["rebase", "-i", "--root"]),
         };
-        self.log_cmd(true, format!("→ git {}", args.join(" ")));
-        self.pending_suspend =
-            Some((args, vec![("GIT_SEQUENCE_EDITOR".into(), editor)]));
+        self.pending_suspend = Some((args, envs));
     }
 
-    fn log_cmd(&mut self, ok: bool, line: String) {
-        self.cmd_log.push((ok, line));
+    fn log_cmd(&mut self, ok: bool, cmd: String, ms: u64) {
+        self.cmd_log.push(LogEntry { ok, cmd, ms });
         // Keep the log short. Old entries have no value.
         if self.cmd_log.len() > 100 {
             self.cmd_log.remove(0);
@@ -490,8 +565,12 @@ impl App {
             }
             Action::StageAll => self.write(svec(&["add", "-A"])),
             Action::CommitPrompt => {
-                self.mode =
-                    Mode::CommitMsg { summary: String::new(), body: String::new(), on_body: false };
+                self.mode = Mode::CommitMsg {
+                    summary: String::new(),
+                    body: String::new(),
+                    on_body: false,
+                    purpose: CommitPurpose::New,
+                };
             }
             Action::CommitEditor => self.suspend(svec(&["commit"])),
             Action::StashPrompt => {
@@ -539,11 +618,60 @@ impl App {
             Action::NewBranchPrompt => {
                 self.mode = Mode::Input { prompt: "new branch name", buffer: String::new(), purpose: InputPurpose::NewBranch };
             }
-            Action::DeleteBranch => {
+            Action::DeleteBranch { force } => {
+                let Some(b) = self.repo.branches.get(self.selected[2]) else { return };
+                if b.current {
+                    self.message = "cannot delete the branch you are on".into();
+                    self.message_ok = false;
+                    return;
+                }
+                let word = if force { "force delete" } else { "delete" };
+                self.mode = Mode::Confirm {
+                    prompt: format!("{word} branch {}? y/n", b.name),
+                    action: ConfirmAction::DeleteBranch { name: b.name.clone(), force },
+                };
+            }
+            Action::RenameBranchPrompt => {
                 if let Some(b) = self.repo.branches.get(self.selected[2]) {
+                    self.mode = Mode::Input {
+                        prompt: "new name for the branch",
+                        buffer: b.name.clone(),
+                        purpose: InputPurpose::RenameBranch(b.name.clone()),
+                    };
+                }
+            }
+            Action::MergeBranch => {
+                let Some(b) = self.repo.branches.get(self.selected[2]) else { return };
+                if b.current {
+                    self.message = "cannot merge a branch into itself".into();
+                    self.message_ok = false;
+                    return;
+                }
+                let name = b.name.clone();
+                let head = self.repo.head.clone().unwrap_or_else(|| "HEAD".into());
+                self.mode = Mode::Confirm {
+                    prompt: format!("merge {name} into {head}? y/n"),
+                    action: ConfirmAction::Merge(name),
+                };
+            }
+
+            Action::RewordCommit => {
+                // Read the old message first. The window opens when it
+                // arrives.
+                let index = self.selected[3];
+                if let Some(c) = self.repo.commits.get(index)
+                    && let Some(git) = &self.git
+                {
+                    git.send(Req::ReadMessage { id: c.id_str().to_string(), index });
+                }
+            }
+            Action::RevertCommit => {
+                if let Some(c) = self.repo.commits.get(self.selected[3]) {
+                    let id = c.id_str().to_string();
+                    let subject = c.subject.to_string();
                     self.mode = Mode::Confirm {
-                        prompt: format!("delete branch {}? y/n", b.name),
-                        action: ConfirmAction::DeleteBranch(b.name.clone()),
+                        prompt: format!("revert {id} \"{subject}\"? y/n"),
+                        action: ConfirmAction::Revert(id),
                     };
                 }
             }
@@ -610,13 +738,28 @@ impl App {
                     self.diff_scroll = 0;
                 }
             }
-            Resp::WriteDone { ok, msg } => {
-                self.message = msg.clone();
+            Resp::WriteDone { ok, cmd, msg, ms } => {
+                // A command that worked belongs in the log only. The bar
+                // keeps its key hints. A failure needs the user to see it.
+                self.message = if ok { String::new() } else { msg };
                 self.message_ok = ok;
-                self.log_cmd(ok, msg);
+                self.log_cmd(ok, cmd, ms);
                 if ok {
                     self.refresh_all();
                 }
+            }
+            // The reword window opens when the old message arrives.
+            Resp::Message { text, index } => {
+                let (summary, body) = match text.split_once('\n') {
+                    Some((s, b)) => (s.to_string(), b.trim_start_matches('\n').to_string()),
+                    None => (text, String::new()),
+                };
+                self.mode = Mode::CommitMsg {
+                    summary,
+                    body,
+                    on_body: false,
+                    purpose: CommitPurpose::Reword(index),
+                };
             }
             Resp::Sync { ahead, behind, unpushed } => {
                 self.repo.ahead = ahead;
@@ -793,6 +936,19 @@ mod tests {
             summary: "feat: add the commit window".into(),
             body: "The window has a summary line and a body.".into(),
             on_body: true,
+            purpose: CommitPurpose::New,
+        };
+        insta::assert_snapshot!(draw(&app, 100, 30).backend());
+    }
+
+    #[test]
+    fn reword_window() {
+        let mut app = demo();
+        app.mode = Mode::CommitMsg {
+            summary: "fix: the old summary".into(),
+            body: String::new(),
+            on_body: false,
+            purpose: CommitPurpose::Reword(0),
         };
         insta::assert_snapshot!(draw(&app, 100, 30).backend());
     }
@@ -800,10 +956,44 @@ mod tests {
     #[test]
     fn empty_summary_is_refused() {
         let mut app = demo();
-        app.submit_commit(String::new(), "body only".into());
+        app.submit_commit(String::new(), "body only".into(), CommitPurpose::New);
         assert!(!app.message_ok);
         // Nothing went to git.
         assert!(app.cmd_log.is_empty());
+    }
+
+    #[test]
+    fn the_current_branch_cannot_be_deleted() {
+        let mut app = demo();
+        app.focus = 2;
+        app.selected[2] = 0; // The demo puts the current branch first.
+        assert!(app.repo.branches[0].current);
+        app.apply(Action::DeleteBranch { force: false });
+        assert!(!app.message_ok);
+        assert!(matches!(app.mode, Mode::Normal), "no confirm window opens");
+    }
+
+    #[test]
+    fn command_log_keeps_the_result_and_the_time() {
+        let mut app = demo();
+        app.apply_resp(Resp::WriteDone {
+            ok: false,
+            cmd: "git branch -d old".into(),
+            msg: "error: the branch is not merged".into(),
+            ms: 12,
+        });
+        assert_eq!(app.cmd_log.len(), 1);
+        assert!(!app.cmd_log[0].ok);
+        assert_eq!(app.cmd_log[0].ms, 12);
+        // A failure stays on the bar. A success does not.
+        assert!(!app.message.is_empty());
+        app.apply_resp(Resp::WriteDone {
+            ok: true,
+            cmd: "git add -A".into(),
+            msg: "done".into(),
+            ms: 3,
+        });
+        assert!(app.message.is_empty());
     }
 
     #[test]

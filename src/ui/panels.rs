@@ -260,15 +260,23 @@ pub fn render_main(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-/// The command log shows the last git commands and their results.
+/// The command log shows the last git commands, their result, and how long
+/// each one took.
 pub fn render_log(frame: &mut Frame, area: Rect, app: &App) {
     let take = area.height.saturating_sub(2) as usize;
     let start = app.cmd_log.len().saturating_sub(take);
     let lines: Vec<Line> = app.cmd_log[start..]
         .iter()
-        .map(|(ok, line)| {
-            let color = if *ok { Color::DarkGray } else { Color::Red };
-            Line::styled(line.clone(), Style::new().fg(color))
+        .map(|e| {
+            let (icon, color) =
+                if e.ok { ("✓", Color::Green) } else { ("✗", Color::Red) };
+            // A slow command gets a warm color, thus it is easy to see.
+            let time_color = if e.ms >= 500 { Color::Yellow } else { Color::DarkGray };
+            Line::from(vec![
+                Span::styled(format!("{icon} "), Style::new().fg(color)),
+                Span::styled(e.cmd.clone(), Style::new().fg(Color::Gray)),
+                Span::styled(format!("  {}ms", e.ms), Style::new().fg(time_color)),
+            ])
         })
         .collect();
     frame.render_widget(
