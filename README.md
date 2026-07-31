@@ -37,9 +37,8 @@ Less is better.
 | Idle | processor | 0.2 % | **0.0 %** | — |
 | Program file | | 17 MB | **3.4 MB** | **~5x** |
 
-The last column is how many times better lazier is. Peak RSS is the most
-memory the program held. lazier uses less in every test, and it uses no
-processor time when you touch no key.
+lazier uses less memory in every test, and it uses no processor time when
+you touch no key.
 
 **Why it is fast.** lazygit starts a `git` process for each read and parses
 the text. lazier reads the repository in its own process with gitoxide.
