@@ -87,6 +87,9 @@ pub enum Req {
     Worktrees,
     /// Run a command line through the shell, in the root of the repository.
     Shell(String),
+    /// Add a pattern to the ignore rules. `local` writes to the private
+    /// file of the repository, thus no other person sees the rule.
+    Ignore { pattern: String, local: bool },
 }
 
 pub struct WorktreeEntry {
@@ -102,7 +105,9 @@ pub struct WorktreeEntry {
 
 #[derive(PartialEq, Clone)]
 pub enum DiffTarget {
-    WorktreeFile(String),
+    /// A file in the work tree. Git does not track a new file, thus its
+    /// diff needs another command.
+    WorktreeFile { path: String, untracked: bool },
     Commit(String),
 }
 
@@ -129,6 +134,26 @@ pub struct Git {
     log_tx: Sender<LogReq>,
     pub root: PathBuf,
     pub git_dir: PathBuf,
+}
+
+/// Add one line to a file of ignore rules. The file gets a newline first
+/// when it does not end with one, thus the rules never join together.
+fn append_rule(path: &std::path::Path, pattern: &str) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let old = std::fs::read_to_string(path).unwrap_or_default();
+    // A rule that is already there needs no second copy.
+    if old.lines().any(|l| l.trim() == pattern) {
+        return Ok(());
+    }
+    let mut text = old;
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(pattern);
+    text.push('\n');
+    std::fs::write(path, text)
 }
 
 impl Git {
@@ -160,6 +185,8 @@ pub fn spawn(event_tx: Sender<Msg>) -> anyhow::Result<Git> {
     // to name the parent directory and to compare worktrees.
     let root = root.canonicalize().unwrap_or(root);
     let git_dir: PathBuf = shared.path().into();
+    // Every worktree of a repository shares the common directory.
+    let common: PathBuf = shared.to_thread_local().common_dir().to_owned();
 
     let (tx, rx) = channel::<Req>();
     let (log_tx, log_rx) = channel::<LogReq>();
@@ -221,6 +248,32 @@ pub fn spawn(event_tx: Sender<Msg>) -> anyhow::Result<Git> {
                 Req::ApplyPatch { patch, reverse } => Some(apply_patch(&worker_root, &patch, reverse)),
                 Req::Sync => Some(sync_state(&worker_root)),
                 Req::Worktrees => Some(Resp::Worktrees(worktrees(&worker_root))),
+                Req::Ignore { pattern, local } => {
+                    // The private file lives in the common directory, thus
+                    // every worktree of the repository shares it.
+                    let (file, name) = if local {
+                        (common.join("info/exclude"), "exclude")
+                    } else {
+                        (worker_root.join(".gitignore"), ".gitignore")
+                    };
+                    let start = std::time::Instant::now();
+                    let result = append_rule(&file, &pattern);
+                    let ms = start.elapsed().as_millis() as u64;
+                    Some(match result {
+                        Ok(()) => Resp::WriteDone {
+                            ok: true,
+                            cmd: format!("{name} += {pattern}"),
+                            output: Vec::new(),
+                            ms,
+                        },
+                        Err(e) => Resp::WriteDone {
+                            ok: false,
+                            cmd: format!("{name} += {pattern}"),
+                            output: vec![e.to_string()],
+                            ms,
+                        },
+                    })
+                }
                 Req::ReadMessage { id, index } => {
                     let out = Command::new("git")
                         .arg("-C")
@@ -462,16 +515,25 @@ fn sync_state(root: &PathBuf) -> Resp {
 }
 
 fn display_diff(root: &PathBuf, target: &DiffTarget) -> (String, String) {
+    // `diff --no-index` reports a difference with exit code one, thus the
+    // output counts whenever there is any.
     let run = |args: &[&str]| match Command::new("git").arg("-C").arg(root).args(args).output() {
-        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).into_owned(),
+        Ok(out) if out.status.success() || !out.stdout.is_empty() => {
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        }
         Ok(out) => String::from_utf8_lossy(&out.stderr).into_owned(),
         Err(e) => e.to_string(),
     };
     match target {
+        // A file that git does not track has nothing to compare against,
+        // thus compare it with an empty file. Every line is then an add.
+        DiffTarget::WorktreeFile { path, untracked: true } => {
+            (run(&["diff", "--no-index", "--", "/dev/null", path]), String::new())
+        }
         // The work-tree diff is index-to-worktree. The hunk view applies
         // these hunks with `apply --cached`, thus the base is the index.
-        DiffTarget::WorktreeFile(p) => {
-            (run(&["diff", "--", p]), run(&["diff", "--cached", "--", p]))
+        DiffTarget::WorktreeFile { path, .. } => {
+            (run(&["diff", "--", path]), run(&["diff", "--cached", "--", path]))
         }
         DiffTarget::Commit(id) => (run(&["show", "--stat", "--patch", id]), String::new()),
     }

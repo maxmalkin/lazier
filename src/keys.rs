@@ -37,6 +37,7 @@ pub enum Action {
     EnterHunks,
     DiscardChanges,
     DeleteFile,
+    IgnorePrompt,
     TakeOurs,
     TakeTheirs,
     // Branches panel
@@ -111,6 +112,7 @@ fn panel_action(focus: usize, code: KeyCode) -> Option<Action> {
         (1, KeyCode::Enter) => Some(Action::EnterHunks),
         (1, KeyCode::Char('d')) => Some(Action::DiscardChanges),
         (1, KeyCode::Char('x')) => Some(Action::DeleteFile),
+        (1, KeyCode::Char('i')) => Some(Action::IgnorePrompt),
         (1, KeyCode::Char('o')) => Some(Action::TakeOurs),
         (1, KeyCode::Char('t')) => Some(Action::TakeTheirs),
         (3, KeyCode::Enter) => Some(Action::ZoomGraph),

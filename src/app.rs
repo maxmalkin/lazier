@@ -103,6 +103,8 @@ pub enum Mode {
     /// The window that makes a worktree. It asks for a branch and a path.
     /// The path follows the branch name until the user edits the path.
     NewWorktree { branch: String, path: String, on_path: bool, path_edited: bool },
+    /// The window that adds a path to the ignore rules.
+    Ignore { pattern: String, tracked: bool },
     /// The commit message window. It has a summary line and a body.
     CommitMsg { summary: String, body: String, on_body: bool, purpose: CommitPurpose },
     /// The todo list editor of an interactive rebase. `base` is the commit
@@ -340,6 +342,20 @@ impl App {
                 }
                 _ => {}
             },
+            Mode::Ignore { pattern, .. } => {
+                let pattern = pattern.clone();
+                match key.code {
+                    KeyCode::Char('i') => {
+                        self.mode = Mode::Normal;
+                        self.ignore(pattern, false);
+                    }
+                    KeyCode::Char('e') => {
+                        self.mode = Mode::Normal;
+                        self.ignore(pattern, true);
+                    }
+                    _ => self.mode = Mode::Normal,
+                }
+            }
             Mode::NewWorktree { branch, path, on_path, path_edited } => match key.code {
                 KeyCode::Esc => self.mode = Mode::Normal,
                 KeyCode::Tab | KeyCode::BackTab | KeyCode::Down | KeyCode::Up => {
@@ -612,6 +628,14 @@ impl App {
         let safe = branch.replace(['/', ' '], "-");
         let parent = root.parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
         format!("{parent}/{name}-{safe}")
+    }
+
+    /// Add a rule. `local` writes the private file, which no other person
+    /// sees. The other file is `.gitignore`, which goes into a commit.
+    fn ignore(&mut self, pattern: String, local: bool) {
+        if let Some(git) = &self.git {
+            git.send(Req::Ignore { pattern, local });
+        }
     }
 
     fn add_worktree(&mut self, branch: String, path: String) {
@@ -936,9 +960,17 @@ impl App {
                     return;
                 }
                 let Some(f) = self.selected_file() else { return };
+                // A file that git does not track has no hunks to stage.
+                if f.work == '?' {
+                    self.message = "stage the whole file first".into();
+                    self.message_ok = false;
+                    return;
+                }
                 // The diff pane must already show this file. The diff text
                 // is index-to-worktree, thus the hunks fit `apply --cached`.
-                if self.diff_target != Some(DiffTarget::WorktreeFile(f.path.clone())) {
+                let want =
+                    DiffTarget::WorktreeFile { path: f.path.clone(), untracked: false };
+                if self.diff_target.as_ref() != Some(&want) {
                     return;
                 }
                 match patch::split_diff(&self.repo.diff) {
@@ -986,6 +1018,21 @@ impl App {
                     prompt: format!("delete {label} from the disk?"),
                     action: ConfirmAction::RunAll(cmds),
                 };
+            }
+
+            Action::IgnorePrompt => {
+                let Some(row) = self.selected_row() else { return };
+                // A directory rule ends with a slash, thus git takes the
+                // whole directory. The root has no useful rule.
+                let (pattern, tracked) = match &row.dir {
+                    Some(d) if d.is_empty() => return,
+                    Some(d) => (format!("/{d}/"), false),
+                    None => {
+                        let Some(f) = self.selected_file() else { return };
+                        (format!("/{}", f.path), f.work != '?')
+                    }
+                };
+                self.mode = Mode::Ignore { pattern, tracked };
             }
 
             Action::TakeOurs | Action::TakeTheirs => {
@@ -1263,7 +1310,10 @@ impl App {
         }
 
         let target = match self.focus {
-            1 => self.selected_file().map(|f| DiffTarget::WorktreeFile(f.path.clone())),
+            1 => self.selected_file().map(|f| DiffTarget::WorktreeFile {
+                path: f.path.clone(),
+                untracked: f.work == '?',
+            }),
             3 => self.repo.commits.get(self.selected[3]).map(|c| DiffTarget::Commit(c.id_str().to_string())),
             _ => None,
         };
@@ -1685,6 +1735,47 @@ mod tests {
         })
         .collect();
         insta::assert_snapshot!(draw(&app, 80, 24).backend());
+    }
+
+    #[test]
+    fn ignore_window() {
+        let mut app = demo();
+        app.mode = Mode::Ignore { pattern: "/notes.txt".into(), tracked: false };
+        insta::assert_snapshot!(draw(&app, 100, 30).backend());
+    }
+
+    #[test]
+    fn ignore_window_warns_for_a_tracked_file() {
+        let mut app = demo();
+        app.mode = Mode::Ignore { pattern: "/src/main.rs".into(), tracked: true };
+        insta::assert_snapshot!(draw(&app, 100, 30).backend());
+    }
+
+    // A file that git does not track needs a rule that starts at the root,
+    // and a directory rule needs a slash at the end.
+    #[test]
+    fn ignore_makes_the_right_pattern() {
+        let mut app = demo();
+        app.focus = 1;
+        // Row zero is the root. It has no useful rule.
+        app.selected[1] = 0;
+        app.apply(Action::IgnorePrompt);
+        assert!(matches!(app.mode, Mode::Normal), "the root opens no window");
+        // Find the untracked file in the tree.
+        let i = app
+            .tree
+            .iter()
+            .position(|r| r.file.is_some_and(|f| app.repo.files[f].path == "notes.txt"))
+            .unwrap();
+        app.selected[1] = i;
+        app.apply(Action::IgnorePrompt);
+        match &app.mode {
+            Mode::Ignore { pattern, tracked } => {
+                assert_eq!(pattern, "/notes.txt");
+                assert!(!tracked);
+            }
+            _ => panic!("expected the ignore window"),
+        }
     }
 
     #[test]

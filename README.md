@@ -93,10 +93,14 @@ command. Push, pull, and fetch run in the background. The bar shows `⟳` while
 one runs, and the command log holds its output.
 
 - **Files.** `space` stage · `a` stage all · `enter` open the hunks, or fold
-  a directory · `d` discard the changes · `x` delete it · `c` commit window ·
-  `C` your editor · `s` stash · `o` `t` take ours or theirs. The name says
-  the state: green in the index, yellow partly in it, red not in it, dim red
-  for a file git does not track.
+  a directory · `d` discard the changes · `x` delete it · `i` ignore it ·
+  `c` commit window · `C` your editor · `s` stash · `o` `t` take ours or
+  theirs. The name says the state: green in the index, yellow partly in it,
+  red not in it, dim red for a file git does not track. A file that git does
+  not track shows all of its lines in the diff pane.
+- **Ignore.** `i` opens a window. `i` again writes the rule to `.gitignore`,
+  which goes into a commit. `e` writes it to `info/exclude`, which stays on
+  your machine.
 - **Hunks.** `j` `k` move a line · `space` mark it · `enter` stage the marked
   lines · `a` stage the whole hunk · `J` `K` go to another hunk.
 - **Branches.** `enter` check out · `n` new · `d` delete, `D` by force · `R`

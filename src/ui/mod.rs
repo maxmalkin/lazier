@@ -72,6 +72,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         Mode::NewWorktree { branch, path, on_path, .. } => {
             render_new_worktree(frame, body, branch, path, *on_path, app)
         }
+        Mode::Ignore { pattern, tracked } => render_ignore(frame, body, pattern, *tracked),
         Mode::CommitMsg { summary, body: text, on_body, purpose } => {
             render_commit(frame, body, summary, text, *on_body, purpose)
         }
@@ -89,6 +90,47 @@ fn centered(area: Rect, w: u16, h: u16) -> Rect {
         width: w,
         height: h,
     }
+}
+
+/// The window that adds a path to the ignore rules. It offers the shared
+/// file and the private one.
+fn render_ignore(frame: &mut Frame, body: Rect, pattern: &str, tracked: bool) {
+    let rows = if tracked { 8 } else { 6 };
+    let area = centered(body, 66, rows);
+    frame.render_widget(Clear, area);
+    let block = Block::bordered()
+        .title(Span::styled(" Ignore ", Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)))
+        .border_style(Style::new().fg(Color::Cyan));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines = vec![
+        Line::from(Span::styled(pattern.to_string(), Style::new().fg(Color::White))),
+        Line::default(),
+        Line::from(vec![
+            Span::styled("i", KEY),
+            Span::styled("  .gitignore", DESC),
+            Span::styled("    every person who clones the repository", DIM),
+        ]),
+        Line::from(vec![
+            Span::styled("e", KEY),
+            Span::styled("  info/exclude", DESC),
+            Span::styled("  only you", DIM),
+        ]),
+    ];
+    // A rule does not remove a file that git already tracks.
+    if tracked {
+        lines.push(Line::default());
+        lines.push(Line::styled(
+            "git tracks this file, thus the rule does nothing until you",
+            Style::new().fg(Color::Yellow),
+        ));
+        lines.push(Line::styled("stop tracking it.", Style::new().fg(Color::Yellow)));
+    }
+    frame.render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: false }),
+        Rect { x: inner.x + 1, width: inner.width.saturating_sub(2), ..inner },
+    );
 }
 
 /// The window that makes a worktree. It asks for a branch and a path. An
@@ -275,6 +317,7 @@ const HINTS: [Hints; 6] = [
         ("c", "Commit"),
         ("d", "Discard"),
         ("x", "Delete"),
+        ("i", "Ignore"),
         ("s", "Stash"),
         ("<enter>", "Hunks"),
         ("C", "Editor"),
@@ -383,6 +426,11 @@ fn render_bar(frame: &mut Frame, area: Rect, app: &App) {
         ]]),
         // The window draws its own keys.
         Mode::NewWorktree { .. } => Line::default(),
+        Mode::Ignore { .. } => hint_line(&[&[
+            ("i", "Share the rule"),
+            ("e", "Keep it to yourself"),
+            ("<esc>", "Cancel"),
+        ]]),
         // A bisect takes over four keys of the commits panel.
         Mode::Normal if app.repo.bisecting => {
             let mut spans = vec![Span::styled(
@@ -453,6 +501,7 @@ const HELP: &[(&str, Hints)] = &[
             ("enter", "open the hunks, or fold the directory"),
             ("d", "discard the changes (it asks first)"),
             ("x", "delete it from the disk (it asks first)"),
+            ("i", "ignore it: i shares the rule, e keeps it to yourself"),
             ("c / C", "open the commit window, or use the editor"),
             ("s", "put the changes in a stash"),
             ("o / t", "take ours or theirs in a conflict"),
