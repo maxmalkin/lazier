@@ -645,6 +645,11 @@ const HELP: &[(&str, Hints)] = &[
             ("g / G", "go to the top or the end"),
             ("J / K", "scroll the diff pane"),
             ("r", "read the repository again"),
+            ("/ esc", "search the commit messages, or show them all"),
+            (":", "run a command line through the shell"),
+            ("P / p / f", "push, pull, or fetch, in the background"),
+            ("F", "force push, with a lease that protects other people"),
+            ("W / M / U", "worktrees, submodules, where HEAD has been"),
             ("? / @ / q", "help, command log, quit"),
         ],
     ),
@@ -661,8 +666,11 @@ const HELP: &[(&str, Hints)] = &[
             ("e", "open the file in your editor"),
             ("b", "see who last changed each line"),
             ("c / C", "open the commit window, or use the editor"),
-            ("s", "put the changes in a stash"),
+            ("s", "stash: it asks which changes to put away"),
             ("o / t", "take ours or theirs in a conflict"),
+            ("v", "mark a file, thus the next key works on every mark"),
+            ("esc", "drop the marks"),
+            ("SM name", "the two marks of git status, then the file"),
         ],
     ),
     (
@@ -673,8 +681,7 @@ const HELP: &[(&str, Hints)] = &[
             ("d / D", "delete it, or delete it by force"),
             ("R", "give the branch a new name"),
             ("m", "merge the branch into the current one"),
-            ("P / p / f", "push, pull, or fetch"),
-            ("F", "force push, with a lease that protects other people"),
+            ("o", "put your commits on top of that branch"),
             ("* ↑ ↓", "current branch, to push, to pull"),
         ],
     ),
@@ -722,7 +729,7 @@ const HELP: &[(&str, Hints)] = &[
             ("/ esc", "search the messages, or show them all again"),
             ("space", "mark a commit, then move to see what lies between"),
             ("↑", "this commit is not on the upstream branch"),
-            ("◆", "a commit that carries a tag"),
+            ("⬟", "a commit that carries a tag"),
         ],
     ),
     (
@@ -742,7 +749,22 @@ const HELP: &[(&str, Hints)] = &[
             ("d / p", "remove one, or drop the records of lost ones"),
         ],
     ),
-    ("Stash [5]", &[("enter / a", "apply the stash"), ("p", "pop it"), ("d", "drop it")]),
+    (
+        "Stash [5]",
+        &[
+            ("enter / a", "apply the stash"),
+            ("p / d", "pop it, or drop it"),
+            ("a u s f", "in the stash window: all, new files too, staged, one file"),
+        ],
+    ),
+    (
+        "Diff pane [0]",
+        &[
+            ("j / k", "scroll it"),
+            ("g / G", "go to the top or the end"),
+            ("marked words", "only the words that changed are marked"),
+        ],
+    ),
     (
         "Rebase",
         &[

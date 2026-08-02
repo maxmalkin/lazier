@@ -185,7 +185,7 @@ fn tree_line(app: &App, i: usize) -> Line<'static> {
         // The root row already carries its slash.
         let slash = if dir.is_empty() { "" } else { "/" };
         return Line::styled(
-            format!("   {pad}{arrow} {}{slash}", row.name),
+            format!("    {pad}{arrow} {}{slash}", row.name),
             Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
         );
     }
@@ -206,7 +206,14 @@ fn tree_line(app: &App, i: usize) -> Line<'static> {
     } else {
         Style::new().fg(Color::Red)
     };
+    // A marked file shows a bar, thus a group is easy to see.
+    let mark = if app.marked.contains(&f.path) {
+        Span::styled("▌", Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+    } else {
+        Span::raw(" ")
+    };
     Line::from(vec![
+        mark,
         // The first column is the index. The second is the work tree.
         Span::styled(
             f.index.to_string(),

@@ -156,6 +156,9 @@ pub struct App {
     diff_lines: u16,
     pub tree: Vec<TreeRow>,
     pub collapsed: HashSet<String>,
+    /// The files that the next action works on. Empty means the action
+    /// works on the row under the cursor.
+    pub marked: HashSet<String>,
     pub cmd_log: Vec<LogEntry>,
     pub show_log: bool,
     /// The commands that run now. The bar shows them.
@@ -200,6 +203,7 @@ impl App {
             diff_lines: 0,
             tree: Vec::new(),
             collapsed: HashSet::new(),
+            marked: HashSet::new(),
             cmd_log: Vec::new(),
             show_log: true,
             running: Vec::new(),
@@ -828,8 +832,10 @@ impl App {
     /// Add a rule. `local` writes the private file, which no other person
     /// sees. The other file is `.gitignore`, which goes into a commit.
     fn ignore(&mut self, pattern: String, local: bool) {
-        if let Some(git) = &self.git {
-            git.send(Req::Ignore { pattern, local });
+        let Some(git) = &self.git else { return };
+        // Several marked files give several rules, one for each line.
+        for line in pattern.lines() {
+            git.send(Req::Ignore { pattern: line.to_string(), local });
         }
     }
 
@@ -1050,6 +1056,26 @@ impl App {
         self.selected_row().and_then(|r| r.file).and_then(|i| self.repo.files.get(i))
     }
 
+    /// The paths that a file action works on: the marked files, or the row
+    /// under the cursor when nothing is marked.
+    fn action_paths(&self) -> Vec<String> {
+        if !self.marked.is_empty() {
+            let mut out: Vec<String> = self.marked.iter().cloned().collect();
+            out.sort();
+            return out;
+        }
+        self.selected_file().map(|f| vec![f.path.clone()]).unwrap_or_default()
+    }
+
+    /// A name for what the next action works on, for a question to the user.
+    fn action_label(&self) -> String {
+        match self.marked.len() {
+            0 => self.selected_file().map(|f| f.path.clone()).unwrap_or_default(),
+            1 => self.marked.iter().next().cloned().unwrap_or_default(),
+            n => format!("{n} files"),
+        }
+    }
+
     /// The path that a file action works on. It gives the pathspec, whether
     /// git knows the path, and a name to show the user. The root row gives
     /// the whole work tree.
@@ -1122,6 +1148,13 @@ impl App {
                     } else {
                         svec(&["add", "--", &dir])
                     };
+                    self.write(args);
+                } else if !self.marked.is_empty() {
+                    // With files marked, stage every one of them.
+                    let paths = self.action_paths();
+                    let mut args = svec(&["add", "--"]);
+                    args.extend(paths);
+                    self.marked.clear();
                     self.write(args);
                 } else if let Some(f) = self.selected_file() {
                     let args = if f.staged() && f.work == ' ' {
@@ -1197,38 +1230,100 @@ impl App {
             }
             // Discard removes work that has no commit. It always asks first.
             Action::DiscardChanges => {
-                let Some((target, untracked, label)) = self.file_target() else { return };
-                let mut cmds = Vec::new();
-                if !untracked {
-                    cmds.push(svec(&["restore", "--staged", "--worktree", "--", &target]));
-                }
-                // New files have no old state. Only a delete removes them.
-                cmds.push(svec(&["clean", "-fd", "--", &target]));
+                let (targets, label) = if self.marked.is_empty() {
+                    let Some((t, _, l)) = self.file_target() else { return };
+                    (vec![t], l)
+                } else {
+                    (self.action_paths(), self.action_label())
+                };
+                let mut restore = svec(&["restore", "--staged", "--worktree", "--"]);
+                restore.extend(targets.iter().cloned());
+                let mut clean = svec(&["clean", "-fd", "--"]);
+                clean.extend(targets);
+                self.marked.clear();
                 self.mode = Mode::Confirm {
                     prompt: format!("discard all changes in {label}? this cannot be undone."),
-                    action: ConfirmAction::RunAll(cmds),
+                    // A new file has no old state, thus only a clean removes
+                    // it. A tracked file needs the restore.
+                    action: ConfirmAction::RunAll(vec![restore, clean]),
                 };
             }
             Action::DeleteFile => {
-                let Some((target, untracked, label)) = self.file_target() else { return };
+                let (targets, label) = if self.marked.is_empty() {
+                    let Some((t, _, l)) = self.file_target() else { return };
+                    (vec![t], l)
+                } else {
+                    (self.action_paths(), self.action_label())
+                };
                 // A delete of the root would remove the whole work tree.
-                if target == "." {
+                if targets.iter().any(|t| t == ".") {
                     self.message = "select a file or a directory, not the root".into();
                     self.message_ok = false;
                     return;
                 }
-                let cmds = if untracked {
-                    vec![svec(&["clean", "-fd", "--", &target])]
-                } else {
-                    vec![svec(&["rm", "-r", "-f", "--", &target])]
-                };
+                // A file git knows needs rm. A new one needs clean. Both
+                // run, and the one that does not apply changes nothing.
+                let mut rm = svec(&["rm", "-r", "-f", "--ignore-unmatch", "--"]);
+                rm.extend(targets.iter().cloned());
+                let mut clean = svec(&["clean", "-fd", "--"]);
+                clean.extend(targets);
+                self.marked.clear();
                 self.mode = Mode::Confirm {
                     prompt: format!("delete {label} from the disk?"),
-                    action: ConfirmAction::RunAll(cmds),
+                    action: ConfirmAction::RunAll(vec![rm, clean]),
                 };
             }
 
+            // Mark or unmark the file under the cursor, so the next action
+            // works on several files at once.
+            Action::ToggleMark => {
+                let Some(row) = self.selected_row() else { return };
+                match &row.dir {
+                    // A directory row marks every file under it, or drops
+                    // the marks when they are all there already.
+                    Some(dir) => {
+                        let under: Vec<String> = self
+                            .repo
+                            .files
+                            .iter()
+                            .filter(|f| dir.is_empty() || f.path.starts_with(&format!("{dir}/")))
+                            .map(|f| f.path.clone())
+                            .collect();
+                        if under.iter().all(|p| self.marked.contains(p)) {
+                            for p in under {
+                                self.marked.remove(&p);
+                            }
+                        } else {
+                            self.marked.extend(under);
+                        }
+                    }
+                    None => {
+                        let Some(f) = self.selected_file() else { return };
+                        let path = f.path.clone();
+                        if !self.marked.remove(&path) {
+                            self.marked.insert(path);
+                        }
+                    }
+                }
+                // The cursor moves on, thus marking a run needs one key
+                // for each row.
+                let len = self.panel_len(1);
+                let sel = &mut self.selected[1];
+                if *sel + 1 < len {
+                    *sel += 1;
+                }
+            }
             Action::IgnorePrompt => {
+                // With files marked, make a rule for each of them.
+                if !self.marked.is_empty() {
+                    let paths = self.action_paths();
+                    self.mode = Mode::Ignore {
+                        pattern: paths.iter().map(|p| format!("/{p}")).collect::<Vec<_>>().join("\n"),
+                        tracked: false,
+                    };
+                    self.marked.clear();
+                    return;
+                }
                 let Some(row) = self.selected_row() else { return };
                 // A directory rule ends with a slash, thus git takes the
                 // whole directory. The root has no useful rule.
@@ -1350,7 +1445,13 @@ impl App {
                     purpose: InputPurpose::Search,
                 };
             }
+            // The escape key drops whatever is set aside: first the marked
+            // files, then the search.
             Action::ClearFilter => {
+                if !self.marked.is_empty() {
+                    self.marked.clear();
+                    return;
+                }
                 if self.repo.filter.take().is_some() {
                     self.selected[3] = 0;
                     if let Some(git) = &self.git {
@@ -2243,6 +2344,54 @@ mod tests {
         // refusal appeared and the mode stayed normal.
         assert!(app.message.is_empty());
         assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    // Marking files makes the next action work on all of them.
+    #[test]
+    fn marks_drive_the_next_action() {
+        let mut app = demo();
+        app.focus = 1;
+        // Put the cursor on the first file row of the tree.
+        app.selected[1] = app.tree.iter().position(|r| r.file.is_some()).unwrap();
+        app.apply(Action::ToggleMark);
+        assert_eq!(app.marked.len(), 1, "one file is marked");
+        // Walk to the next file row and mark that one too.
+        while app.selected_row().is_some_and(|r| r.file.is_none()) {
+            app.apply(Action::Down);
+        }
+        app.apply(Action::ToggleMark);
+        assert_eq!(app.marked.len(), 2);
+        assert_eq!(app.action_paths().len(), 2);
+        assert_eq!(app.action_label(), "2 files");
+        // Escape drops the marks before it touches the search.
+        app.repo.filter = Some("x".into());
+        app.apply(Action::ClearFilter);
+        assert!(app.marked.is_empty());
+        assert_eq!(app.repo.filter.as_deref(), Some("x"), "the search is still set");
+        app.apply(Action::ClearFilter);
+        assert!(app.repo.filter.is_none());
+    }
+
+    // A directory row marks every file under it in one key.
+    #[test]
+    fn a_directory_marks_all_of_its_files() {
+        let mut app = demo();
+        app.focus = 1;
+        let src = app.tree.iter().position(|r| r.dir.as_deref() == Some("src")).unwrap();
+        app.selected[1] = src;
+        app.apply(Action::ToggleMark);
+        assert_eq!(app.marked.len(), 2, "both files under src are marked");
+        app.selected[1] = src;
+        app.apply(Action::ToggleMark);
+        assert!(app.marked.is_empty(), "the same key drops them again");
+    }
+
+    #[test]
+    fn with_no_marks_the_action_uses_the_row() {
+        let mut app = demo();
+        app.focus = 1;
+        app.selected[1] = app.tree.iter().position(|r| r.file.is_some()).unwrap();
+        assert_eq!(app.action_paths().len(), 1);
     }
 
     #[test]
