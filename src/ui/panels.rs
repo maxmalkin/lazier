@@ -35,8 +35,11 @@ fn graph_spans(graph: &str, tagged: bool) -> Vec<Span<'static>> {
         .map(|(i, ch)| {
             let lane = Style::new().fg(LANE_COLORS[(i / 2) % LANE_COLORS.len()]);
             match ch {
+                // A pentagon is not a circle at any size, thus a release
+                // is easy to find. This glyph takes one column, which
+                // keeps the lanes of the graph in line.
                 '●' | '◉' if tagged => Span::styled(
-                    "◆".to_string(),
+                    "⬟".to_string(),
                     Style::new().fg(Color::LightYellow).add_modifier(Modifier::BOLD),
                 ),
                 _ => Span::styled(ch.to_string(), lane),
