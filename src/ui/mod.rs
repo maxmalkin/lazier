@@ -599,16 +599,21 @@ fn render_bar(frame: &mut Frame, area: Rect, app: &App) {
         }
         // The commit window draws its own key hints.
         Mode::CommitMsg { .. } => Line::default(),
-        // A stopped rebase takes over three keys.
+        // A stopped rebase takes over three keys, but not on the files
+        // panel, where you stage and commit the parts of the work.
         Mode::Normal if app.rebase.is_some() => {
             let r = app.rebase.as_ref().unwrap();
+            let word = if app.splitting { "SPLIT" } else { "REBASE" };
             let mut spans = vec![Span::styled(
-                format!("REBASE {}/{}  ", r.step, r.total),
+                format!("{word} {}/{}  ", r.step, r.total),
                 Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
             )];
-            spans.extend(
-                hint_line(&[&[("c", "continue"), ("s", "skip"), ("A", "abort")]]).spans,
-            );
+            let keys: Hints = if app.focus == 1 {
+                &[("<space>", "Stage a part"), ("c", "Commit it"), ("[1] then c", "Go on")]
+            } else {
+                &[("c", "Continue"), ("s", "Skip"), ("A", "Abort")]
+            };
+            spans.extend(hint_line(&[keys]).spans);
             Line::from(spans)
         }
         // A failed command shows its message in red.
@@ -721,6 +726,7 @@ const HELP: &[(&str, Hints)] = &[
         &[
             ("enter", "open the full graph view"),
             ("i", "start an interactive rebase here"),
+            ("s", "open the commit, so it can become several commits"),
             ("w", "give the commit a new message"),
             ("v", "revert the commit"),
             ("y", "put its changes in the index, with no commit"),

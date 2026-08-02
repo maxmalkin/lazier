@@ -96,6 +96,8 @@ pub enum ConfirmAction {
     StageAllThenCommit,
     /// Send the staged changes back to the commits that wrote those lines.
     Absorb,
+    /// Stop a rebase at one commit so it can become several commits.
+    Split(usize),
     /// Run each command in order. Discard and delete need two commands,
     /// because tracked files and new files need different treatment.
     RunAll(Vec<Vec<String>>),
@@ -184,6 +186,10 @@ pub struct App {
     /// True while the staging of every change runs before the commit
     /// window opens.
     pending_commit_window: bool,
+    /// True between the start of a split and the stop of its rebase.
+    pending_split: bool,
+    /// True while one commit is open and waiting to become several.
+    pub splitting: bool,
     pause: Arc<AtomicBool>,
     /// A copy of the message sender. A move to another worktree needs it to
     /// start new workers.
@@ -220,6 +226,8 @@ impl App {
             pending_open: None,
             pending_fixup: None,
             pending_commit_window: false,
+            pending_split: false,
+            splitting: false,
             pause: Arc::new(AtomicBool::new(false)),
             tx: None,
         }
@@ -285,18 +293,20 @@ impl App {
         let Some(git) = &self.git else { return Ok(()) };
         self.pause.store(true, Ordering::Relaxed);
         let start = std::time::Instant::now();
-        disable_raw_mode()?;
+        // A terminal that answers slowly must not end the session, thus
+        // none of these steps may return an error upward.
+        let _ = disable_raw_mode();
         // The child program owns the terminal, thus it must own the mouse.
-        execute!(std::io::stdout(), DisableMouseCapture, LeaveAlternateScreen)?;
+        let _ = execute!(std::io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
         let status = std::process::Command::new("git")
             .arg("-C")
             .arg(&git.root)
             .args(&args)
             .envs(envs)
             .status();
-        enable_raw_mode()?;
-        execute!(std::io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
-        terminal.clear()?;
+        let _ = enable_raw_mode();
+        let _ = execute!(std::io::stdout(), EnterAlternateScreen, EnableMouseCapture);
+        let _ = terminal.clear();
         self.pause.store(false, Ordering::Relaxed);
         let ok = matches!(&status, Ok(s) if s.success());
         let err = match status {
@@ -307,6 +317,16 @@ impl App {
         let ms = start.elapsed().as_millis() as u64;
         self.log_cmd(ok, format!("git {}", args.join(" ")), ms, err.into_iter().collect());
         self.refresh_all();
+        // A split stops the rebase at the commit. Undo that commit but
+        // keep its work, thus the parts are ready to stage one at a time.
+        if self.pending_split {
+            self.pending_split = false;
+            if self.rebase.is_some() {
+                self.splitting = true;
+                self.focus = 1;
+                self.write(svec(&["reset", "HEAD^"]));
+            }
+        }
         Ok(())
     }
 
@@ -320,8 +340,8 @@ impl App {
         let Some(git) = &self.git else { return Ok(()) };
         let root = git.root.clone();
         self.pause.store(true, Ordering::Relaxed);
-        disable_raw_mode()?;
-        execute!(std::io::stdout(), DisableMouseCapture, LeaveAlternateScreen)?;
+        let _ = disable_raw_mode();
+        let _ = execute!(std::io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
         // The program name can hold flags, thus give it to the shell.
         let (shell, flag) = if cfg!(windows) { ("cmd", "/C") } else { ("sh", "-c") };
         let status = std::process::Command::new(shell)
@@ -329,9 +349,9 @@ impl App {
             .arg(format!("{program} \"{file}\""))
             .current_dir(&root)
             .status();
-        enable_raw_mode()?;
-        execute!(std::io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
-        terminal.clear()?;
+        let _ = enable_raw_mode();
+        let _ = execute!(std::io::stdout(), EnterAlternateScreen, EnableMouseCapture);
+        let _ = terminal.clear();
         self.pause.store(false, Ordering::Relaxed);
         let ok = matches!(&status, Ok(s) if s.success());
         let err = match status {
@@ -361,9 +381,10 @@ impl App {
                 // A key press removes the old message. The bar then shows
                 // the key hints again.
                 self.message.clear();
-                // While a rebase is stopped, these keys come first. They
-                // replace the normal meaning of the key.
-                if self.rebase.is_some() {
+                // While a rebase is stopped, these keys drive it. On the
+                // files panel the normal keys win, because that is where
+                // you stage and commit the parts of the work.
+                if self.rebase.is_some() && self.focus != 1 {
                     match key.code {
                         KeyCode::Char('c') => return self.apply(Action::RebaseContinue),
                         KeyCode::Char('s') => return self.apply(Action::RebaseSkip),
@@ -650,6 +671,16 @@ impl App {
                             self.write(svec(&["add", "-A"]));
                             return;
                         }
+                        ConfirmAction::Split(index) => {
+                            let Some((mut items, base)) = self.rebase_slice(index) else {
+                                return;
+                            };
+                            // The target is the oldest commit in the list.
+                            items[index].action = TodoAction::Edit;
+                            self.pending_split = true;
+                            self.run_rebase(items, base);
+                            return;
+                        }
                         ConfirmAction::Absorb => {
                             let own = self.repo.unpushed.clone();
                             self.running.push("absorb".into());
@@ -676,7 +707,8 @@ impl App {
                         | ConfirmAction::GoToWorktree(_)
                         | ConfirmAction::Fixup(_)
                         | ConfirmAction::StageAllThenCommit
-                        | ConfirmAction::Absorb => return,
+                        | ConfirmAction::Absorb
+                        | ConfirmAction::Split(_) => return,
                     };
                     self.write(args);
                 }
@@ -1628,6 +1660,15 @@ impl App {
             }
 
             Action::InteractiveRebase => self.start_rebase(),
+            // Open one commit so its changes can go into several commits.
+            Action::SplitCommit => {
+                let Some(c) = self.repo.commits.get(self.selected[3]) else { return };
+                let (id, subject) = (c.id_str().to_string(), c.subject.to_string());
+                self.mode = Mode::Confirm {
+                    prompt: format!("open {id} \"{subject}\" so you can make several commits from it?"),
+                    action: ConfirmAction::Split(self.selected[3]),
+                };
+            }
             // These three keys work only while a rebase is stopped.
             Action::RebaseContinue => self.suspend(svec(&["rebase", "--continue"])),
             Action::RebaseSkip => self.suspend(svec(&["rebase", "--skip"])),
@@ -1829,6 +1870,10 @@ impl App {
         let dir = self.git.as_ref().map(|g| g.git_dir.clone());
         self.rebase = dir.as_deref().and_then(rebase::detect);
         self.repo.bisecting = dir.as_deref().is_some_and(rebase::bisecting);
+        // The split ends with the rebase.
+        if self.rebase.is_none() {
+            self.splitting = false;
+        }
     }
 
     /// Send the requests that the new state makes necessary. The main loop
