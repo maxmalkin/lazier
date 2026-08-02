@@ -222,8 +222,13 @@ pub fn render_left(frame: &mut Frame, areas: [Rect; 5], app: &App) {
     // The border takes two columns of the branch panel.
     let branch_width = areas[2].width.saturating_sub(2) as usize;
     let spinner = app.spinner();
-    let mut head = repo.head.clone().unwrap_or_else(|| "(no repo)".into());
-    // Show how far the branch is from its upstream.
+    // The status row names the branch and the one it follows, then says
+    // how far apart they are.
+    let name = repo.head.clone().unwrap_or_else(|| "(no branch)".into());
+    let mut head = match &repo.upstream {
+        Some(up) => format!("{name} → {up}"),
+        None => format!("{name} (no upstream)"),
+    };
     if repo.ahead > 0 {
         head.push_str(&format!(" ↑{}", repo.ahead));
     }
@@ -322,6 +327,25 @@ pub fn render_rebase(frame: &mut Frame, area: Rect, items: &[TodoItem], cursor: 
     );
 }
 
+/// A removed line and the added line under it, with the words that differ
+/// marked. This makes a small change in a long line easy to find.
+fn word_pair(old: &str, new: &str) -> Option<(Line<'static>, Line<'static>)> {
+    let (o_body, n_body) = (&old[1..], &new[1..]);
+    let s = super::words::changed_span(o_body, n_body)?;
+    let mark = Style::new().add_modifier(Modifier::REVERSED | Modifier::BOLD);
+    let build = |sign: &str, body: &str, (a, b): (usize, usize), color: Color| {
+        Line::from(vec![
+            Span::styled(format!("{sign}{}", &body[..a]), Style::new().fg(color)),
+            Span::styled(body[a..b].to_string(), mark.fg(color)),
+            Span::styled(body[b..].to_string(), Style::new().fg(color)),
+        ])
+    };
+    Some((
+        build("-", o_body, s.old, Color::Red),
+        build("+", n_body, s.new, Color::Green),
+    ))
+}
+
 // Color one line of a diff.
 fn diff_line(l: &str) -> Line<'static> {
     // File header lines come before the +/- check. A "---" line is a
@@ -417,8 +441,33 @@ pub fn render_main(frame: &mut Frame, area: Rect, app: &App) {
                 Style::new().fg(color).add_modifier(Modifier::BOLD),
             ));
         }
-        for l in text.lines() {
-            rows.push(diff_line(l));
+        // A removed line next to an added line is one edit. Mark the words
+        // that differ between the two.
+        let src: Vec<&str> = text.lines().collect();
+        let mut i = 0;
+        while i < src.len() {
+            let pair = match src.get(i + 1) {
+                Some(next)
+                    if src[i].starts_with('-')
+                        && !src[i].starts_with("---")
+                        && next.starts_with('+')
+                        && !next.starts_with("+++") =>
+                {
+                    word_pair(src[i], next)
+                }
+                _ => None,
+            };
+            match pair {
+                Some((a, b)) => {
+                    rows.push(a);
+                    rows.push(b);
+                    i += 2;
+                }
+                None => {
+                    rows.push(diff_line(src[i]));
+                    i += 1;
+                }
+            }
             if rows.len() >= limit {
                 break;
             }

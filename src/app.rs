@@ -50,12 +50,13 @@ pub struct RepoState {
     pub filter: Option<String>,
     /// The commit that the selected one is compared against.
     pub compare: Option<String>,
+    /// The branch that the current one follows, such as "origin/main".
+    pub upstream: Option<String>,
 }
 
 pub enum InputPurpose {
     NewBranch,
     RenameBranch(String),
-    StashMsg,
     /// Run the text through the shell.
     Shell,
     /// Make a tag on a commit.
@@ -129,6 +130,8 @@ pub enum Mode {
     Error { cmd: String, output: Vec<String> },
     /// Who last changed each line of a file.
     Blame { path: String, lines: Vec<BlameLine>, cursor: usize },
+    /// The window that chooses what goes into a stash.
+    Stash { path: Option<String> },
     /// The submodules and their state.
     Submodules { list: Vec<SubmoduleEntry>, cursor: usize },
     /// The commit message window. It has a summary line and a body.
@@ -438,6 +441,21 @@ impl App {
                     _ => self.mode = Mode::Normal,
                 }
             }
+            Mode::Stash { path } => {
+                let path = path.clone();
+                // Each choice puts a different set of changes away.
+                let args: Option<Vec<String>> = match key.code {
+                    KeyCode::Char('a') => Some(svec(&["stash", "push"])),
+                    KeyCode::Char('u') => Some(svec(&["stash", "push", "--include-untracked"])),
+                    KeyCode::Char('s') => Some(svec(&["stash", "push", "--staged"])),
+                    KeyCode::Char('f') => path.map(|p| svec(&["stash", "push", "--", &p])),
+                    _ => None,
+                };
+                self.mode = Mode::Normal;
+                if let Some(args) = args {
+                    self.write(args);
+                }
+            }
             Mode::Blame { lines, cursor, .. } => match key.code {
                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('b') => self.mode = Mode::Normal,
                 KeyCode::Char('j') | KeyCode::Down => {
@@ -717,7 +735,6 @@ impl App {
         let args: Vec<String> = match purpose {
             InputPurpose::NewBranch => svec(&["checkout", "-b", &buffer]),
             InputPurpose::RenameBranch(old) => svec(&["branch", "-m", &old, &buffer]),
-            InputPurpose::StashMsg => svec(&["stash", "push", "-m", &buffer]),
             // Always make a tag with a message. Some settings turn every
             // tag into one that needs a message, and then a plain tag fails.
             InputPurpose::Tag(id) => svec(&["tag", "-a", &buffer, "-m", &buffer, &id]),
@@ -1138,7 +1155,8 @@ impl App {
             }
             Action::CommitEditor => self.suspend(svec(&["commit"])),
             Action::StashPrompt => {
-                self.mode = Mode::Input { prompt: "stash message", buffer: String::new(), purpose: InputPurpose::StashMsg };
+                let path = self.selected_file().map(|f| f.path.clone());
+                self.mode = Mode::Stash { path };
             }
             Action::EnterHunks => {
                 // On a directory row, the enter key folds or unfolds it.
@@ -1389,6 +1407,21 @@ impl App {
                     };
                 }
             }
+            // Put the commits of the current branch on top of another one.
+            Action::RebaseOnto => {
+                let Some(b) = self.repo.branches.get(self.selected[2]) else { return };
+                if b.current {
+                    self.message = "that is the branch you are on".into();
+                    self.message_ok = false;
+                    return;
+                }
+                let name = b.name.clone();
+                let head = self.repo.head.clone().unwrap_or_else(|| "HEAD".into());
+                self.mode = Mode::Confirm {
+                    prompt: format!("put the commits of {head} on top of {name}?"),
+                    action: ConfirmAction::RunAll(vec![svec(&["rebase", "--autostash", &name])]),
+                };
+            }
             Action::MergeBranch => {
                 let Some(b) = self.repo.branches.get(self.selected[2]) else { return };
                 if b.current {
@@ -1605,10 +1638,11 @@ impl App {
                     purpose: CommitPurpose::Reword(index),
                 };
             }
-            Resp::Sync { ahead, behind, unpushed } => {
+            Resp::Sync { ahead, behind, unpushed, upstream } => {
                 self.repo.ahead = ahead;
                 self.repo.behind = behind;
                 self.repo.unpushed = unpushed;
+                self.repo.upstream = upstream;
             }
             Resp::Worktrees(list) => self.mode = Mode::Worktrees { list, cursor: 0 },
             Resp::Reflog(list) => self.mode = Mode::Reflog { list, cursor: 0 },

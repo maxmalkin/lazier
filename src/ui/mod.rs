@@ -1,4 +1,5 @@
 mod list;
+mod words;
 mod panels;
 
 use ratatui::Frame;
@@ -73,6 +74,7 @@ pub fn render(frame: &mut Frame, app: &App) {
             render_new_worktree(frame, body, branch, path, *on_path, app)
         }
         Mode::Ignore { pattern, tracked } => render_ignore(frame, body, pattern, *tracked),
+        Mode::Stash { path } => render_stash(frame, body, path.as_deref()),
         Mode::Reset { target, subject } => render_reset(frame, body, target, subject),
         Mode::Error { cmd, output } => render_error(frame, body, cmd, output),
         Mode::Reflog { list, cursor } => {
@@ -169,6 +171,36 @@ fn render_reset(frame: &mut Frame, body: Rect, target: &str, subject: &str) {
             Span::styled(" your changes go away", Style::new().fg(Color::Red)),
         ]),
     ];
+    frame.render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: false }),
+        Rect { x: inner.x + 1, width: inner.width.saturating_sub(2), ..inner },
+    );
+}
+
+/// The window that chooses what goes into a stash.
+fn render_stash(frame: &mut Frame, body: Rect, path: Option<&str>) {
+    let area = centered(body, 62, if path.is_some() { 8 } else { 7 });
+    frame.render_widget(Clear, area);
+    let block = Block::bordered()
+        .title(Span::styled(" Stash ", Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)))
+        .border_style(Style::new().fg(Color::Cyan));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let row = |k: &'static str, what: &str, note: &str| {
+        Line::from(vec![
+            Span::styled(k, KEY),
+            Span::styled(format!("  {what:<16}"), DESC),
+            Span::styled(note.to_string(), DIM),
+        ])
+    };
+    let mut lines = vec![
+        row("a", "everything", "the changes git tracks"),
+        row("u", "and new files", "those too"),
+        row("s", "staged only", "what waits in the index"),
+    ];
+    if let Some(p) = path {
+        lines.push(row("f", "this file", p));
+    }
     frame.render_widget(
         Paragraph::new(lines).wrap(Wrap { trim: false }),
         Rect { x: inner.x + 1, width: inner.width.saturating_sub(2), ..inner },
@@ -524,6 +556,13 @@ fn render_bar(frame: &mut Frame, area: Rect, app: &App) {
             ("s", "Keep in the index"),
             ("m", "Keep in the work tree"),
             ("h", "Throw away"),
+            ("<esc>", "Cancel"),
+        ]]),
+        Mode::Stash { .. } => hint_line(&[&[
+            ("a", "All"),
+            ("u", "With new files"),
+            ("s", "Staged only"),
+            ("f", "This file"),
             ("<esc>", "Cancel"),
         ]]),
         Mode::Blame { .. } => hint_line(&[&[

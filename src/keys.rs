@@ -60,6 +60,7 @@ pub enum Action {
     DeleteBranch { force: bool },
     RenameBranchPrompt,
     MergeBranch,
+    RebaseOnto,
     Push,
     Pull,
     Fetch,
@@ -159,6 +160,8 @@ fn panel_action(focus: usize, code: KeyCode) -> Option<Action> {
         (2, KeyCode::Char('D')) => Some(Action::DeleteBranch { force: true }),
         (2, KeyCode::Char('R')) => Some(Action::RenameBranchPrompt),
         (2, KeyCode::Char('m')) => Some(Action::MergeBranch),
+        // The o key means "onto": rebase what you have onto that branch.
+        (2, KeyCode::Char('o')) => Some(Action::RebaseOnto),
         (4, KeyCode::Enter | KeyCode::Char('a')) => Some(Action::ApplyStash),
         (4, KeyCode::Char('p')) => Some(Action::PopStash),
         (4, KeyCode::Char('d')) => Some(Action::DropStash),

@@ -167,7 +167,13 @@ pub enum Resp {
     /// `output` holds the first lines that the command printed. The command
     /// log shows them.
     WriteDone { ok: bool, cmd: String, output: Vec<String>, ms: u64 },
-    Sync { ahead: u32, behind: u32, unpushed: std::collections::HashSet<String> },
+    Sync {
+        ahead: u32,
+        behind: u32,
+        unpushed: std::collections::HashSet<String>,
+        /// The upstream branch, such as "origin/main".
+        upstream: Option<String>,
+    },
     Message { text: String, index: usize },
     Worktrees(Vec<WorktreeEntry>),
     Reflog(Vec<ReflogEntry>),
@@ -728,7 +734,10 @@ fn sync_state(root: &PathBuf) -> Resp {
     let unpushed = run(&["rev-list", "--abbrev-commit", "--abbrev=7", "@{upstream}..HEAD"])
         .map(|out| out.lines().map(|l| l.chars().take(7).collect()).collect())
         .unwrap_or_default();
-    Resp::Sync { ahead, behind, unpushed }
+    let upstream = run(&["rev-parse", "--abbrev-ref", "@{upstream}"])
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    Resp::Sync { ahead, behind, unpushed, upstream }
 }
 
 fn display_diff(root: &PathBuf, target: &DiffTarget) -> (String, String) {

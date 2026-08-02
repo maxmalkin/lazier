@@ -3,7 +3,7 @@ source: src/app.rs
 expression: "draw(&app, 100, 24).backend()"
 ---
 "┌[1]─Status───────────────────────┐┌Hunk 1/1 — src/app.rs──────────────────────────────────────────┐"
-"│main ↑2                          ││  keep                                                         │"
+"│main (no upstream) ↑2            ││  keep                                                         │"
 "└───────────────────────────1 of 1┘│▌-old line                                                     │"
 "┌[2]─Files────────────────────────┃│ +new line                                                     │"
 "│   ▾ /                           ┃│                                                               │"
