@@ -663,6 +663,7 @@ const HELP: &[(&str, Hints)] = &[
             ("x", "delete it from the disk (it asks first)"),
             ("i", "ignore it: i shares the rule, e keeps it to yourself"),
             ("A", "add the staged changes to the last commit"),
+            ("z", "send each staged change back to the commit that wrote it"),
             ("e", "open the file in your editor"),
             ("b", "see who last changed each line"),
             ("c / C", "open the commit window, or use the editor"),

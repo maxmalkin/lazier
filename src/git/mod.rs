@@ -1,5 +1,6 @@
 //! This is the git backend. Reads use gix. Only read.rs can import gix.
 //! Writes and display diffs use the git subprocess.
+pub mod absorb;
 pub mod graph;
 pub mod patch;
 mod read;
@@ -124,6 +125,9 @@ pub enum Req {
     Blame(String),
     /// List the submodules of the repository.
     Submodules,
+    /// Send each staged change back to the commit that last wrote those
+    /// lines. Only the commits in the set may take a change.
+    Absorb { own: std::collections::HashSet<String> },
     /// Run a command line through the shell, in the root of the repository.
     Shell(String),
     /// Add a pattern to the ignore rules. `local` writes to the private
@@ -311,6 +315,32 @@ pub fn spawn(event_tx: Sender<Msg>) -> anyhow::Result<Git> {
                     Some(Resp::Blame { lines: blame(&worker_root, &path), path })
                 }
                 Req::Submodules => Some(Resp::Submodules(submodules(&worker_root))),
+                // The work can take seconds on a big change, thus it runs
+                // on a thread of its own.
+                Req::Absorb { own } => {
+                    let (root, ev) = (worker_root.clone(), event_tx.clone());
+                    std::thread::spawn(move || {
+                        let start = std::time::Instant::now();
+                        let result = absorb::run(&root, &|id| own.contains(&id[..7.min(id.len())]));
+                        let ms = start.elapsed().as_millis() as u64;
+                        let resp = match result {
+                            Ok(lines) => Resp::WriteDone {
+                                ok: true,
+                                cmd: "absorb".into(),
+                                output: lines,
+                                ms,
+                            },
+                            Err(e) => Resp::WriteDone {
+                                ok: false,
+                                cmd: "absorb".into(),
+                                output: vec![e],
+                                ms,
+                            },
+                        };
+                        let _ = ev.send(Msg::Git(resp));
+                    });
+                    None
+                }
                 Req::Copy(text) => {
                     let start = std::time::Instant::now();
                     let result = copy_to_clipboard(&text);

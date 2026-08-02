@@ -94,6 +94,8 @@ pub enum ConfirmAction {
     Fixup(String),
     /// Stage every change, then open the commit window.
     StageAllThenCommit,
+    /// Send the staged changes back to the commits that wrote those lines.
+    Absorb,
     /// Run each command in order. Discard and delete need two commands,
     /// because tracked files and new files need different treatment.
     RunAll(Vec<Vec<String>>),
@@ -648,6 +650,14 @@ impl App {
                             self.write(svec(&["add", "-A"]));
                             return;
                         }
+                        ConfirmAction::Absorb => {
+                            let own = self.repo.unpushed.clone();
+                            self.running.push("absorb".into());
+                            if let Some(git) = &self.git {
+                                git.send(Req::Absorb { own });
+                            }
+                            return;
+                        }
                         _ => {}
                     }
                     let args: Vec<String> = match action {
@@ -665,7 +675,8 @@ impl App {
                         ConfirmAction::RunAll(_)
                         | ConfirmAction::GoToWorktree(_)
                         | ConfirmAction::Fixup(_)
-                        | ConfirmAction::StageAllThenCommit => return,
+                        | ConfirmAction::StageAllThenCommit
+                        | ConfirmAction::Absorb => return,
                     };
                     self.write(args);
                 }
@@ -1373,6 +1384,33 @@ impl App {
                         subject: c.subject.to_string(),
                     };
                 }
+            }
+            // Send the staged changes back to the commits they belong to.
+            Action::Absorb => {
+                if !self.repo.files.iter().any(|f| f.staged()) {
+                    self.mode = Mode::Error {
+                        cmd: "absorb".into(),
+                        output: vec!["stage the changes you want to send back first".into()],
+                    };
+                    return;
+                }
+                if self.repo.unpushed.is_empty() {
+                    self.mode = Mode::Error {
+                        cmd: "absorb".into(),
+                        output: vec![
+                            "every commit is on the remote already".into(),
+                            "a change can only go back into a commit that is still yours.".into(),
+                        ],
+                    };
+                    return;
+                }
+                let n = self.repo.unpushed.len();
+                self.mode = Mode::Confirm {
+                    prompt: format!(
+                        "send each staged change back to the commit that wrote those lines? it rewrites your {n} commits that no remote has."
+                    ),
+                    action: ConfirmAction::Absorb,
+                };
             }
             Action::BlameFile => {
                 let Some(f) = self.selected_file() else { return };
