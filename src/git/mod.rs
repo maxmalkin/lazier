@@ -42,6 +42,16 @@ pub struct BranchEntry {
     pub gone: bool,
     /// The age of the last commit, in a short form such as "3d".
     pub age: String,
+    /// The branch lives on a remote. A checkout makes a local branch that
+    /// follows it.
+    pub remote: bool,
+}
+
+pub struct ReflogEntry {
+    pub id: String,
+    /// The position, such as HEAD@{2}.
+    pub at: String,
+    pub what: String,
 }
 
 // Keep this struct small. The list can hold more than one million entries.
@@ -85,6 +95,8 @@ pub enum Req {
     ReadMessage { id: String, index: usize },
     /// List the worktrees of the repository.
     Worktrees,
+    /// List the recent positions of HEAD.
+    Reflog,
     /// Run a command line through the shell, in the root of the repository.
     Shell(String),
     /// Add a pattern to the ignore rules. `local` writes to the private
@@ -127,6 +139,7 @@ pub enum Resp {
     Sync { ahead: u32, behind: u32, unpushed: std::collections::HashSet<String> },
     Message { text: String, index: usize },
     Worktrees(Vec<WorktreeEntry>),
+    Reflog(Vec<ReflogEntry>),
 }
 
 pub struct Git {
@@ -248,6 +261,7 @@ pub fn spawn(event_tx: Sender<Msg>) -> anyhow::Result<Git> {
                 Req::ApplyPatch { patch, reverse } => Some(apply_patch(&worker_root, &patch, reverse)),
                 Req::Sync => Some(sync_state(&worker_root)),
                 Req::Worktrees => Some(Resp::Worktrees(worktrees(&worker_root))),
+                Req::Reflog => Some(Resp::Reflog(reflog(&worker_root))),
                 Req::Ignore { pattern, local } => {
                     // The private file lives in the common directory, thus
                     // every worktree of the repository shares it.
@@ -395,8 +409,9 @@ fn branches(root: &PathBuf) -> Vec<BranchEntry> {
         .args([
             "for-each-ref",
             "--sort=-committerdate",
-            "--format=%(refname:short)\t%(HEAD)\t%(upstream:track)\t%(committerdate:relative)",
+            "--format=%(refname:short)\t%(HEAD)\t%(upstream:track)\t%(committerdate:relative)\t%(refname)",
             "refs/heads/",
+            "refs/remotes/",
         ])
         .output();
     let Ok(out) = out else { return Vec::new() };
@@ -415,15 +430,49 @@ fn branches(root: &PathBuf) -> Vec<BranchEntry> {
                 behind: track_count(track, "behind "),
                 gone: track.contains("gone"),
                 age: short_age(parts.next().unwrap_or("")),
+                remote: {
+                    let full = parts.next().unwrap_or("");
+                    // The pointer a remote keeps to its own head shortens
+                    // to just the remote name, thus the full ref is the
+                    // only way to know it.
+                    if full.ends_with("/HEAD") {
+                        return None;
+                    }
+                    full.starts_with("refs/remotes/")
+                },
             })
         })
         .collect();
+    // A remote branch that a local branch already follows is noise.
+    let local: Vec<String> = list.iter().filter(|b| !b.remote).map(|b| b.name.clone()).collect();
+    list.retain(|b| !b.remote || !local.iter().any(|l| b.name.ends_with(&format!("/{l}"))));
     // The branch you are on goes first. The others keep the recency order.
     if let Some(i) = list.iter().position(|b| b.current) {
         let current = list.remove(i);
         list.insert(0, current);
     }
     list
+}
+
+/// The recent positions of HEAD. It is the way back from a mistake.
+fn reflog(root: &PathBuf) -> Vec<ReflogEntry> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["reflog", "-n", "60", "--format=%h%x09%gd%x09%gs"])
+        .output();
+    let Ok(out) = out else { return Vec::new() };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut p = line.split('\t');
+            Some(ReflogEntry {
+                id: p.next()?.to_string(),
+                at: p.next()?.to_string(),
+                what: p.next().unwrap_or("").to_string(),
+            })
+        })
+        .collect()
 }
 
 /// List the worktrees. The output has one block for each worktree. A block

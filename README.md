@@ -88,14 +88,16 @@ The mouse works too. A click goes to the panel and puts the selection on the
 row you clicked. The wheel moves the selection. To select text with the
 mouse, hold `shift`, because the program takes the mouse events.
 
-These work in every panel: `P` push · `p` pull · `f` fetch · `:` run a shell
-command. Push, pull, and fetch run in the background. The bar shows `⟳` while
-one runs, and the command log holds its output.
+These work in every panel: `P` push · `F` force push, with a lease that
+protects the work of other people · `p` pull · `f` fetch · `U` the list of
+places HEAD has been · `:` run a shell command. Push, pull, and fetch run in
+the background. The bar shows `⟳` while one runs, and the command log holds
+its output. A push of a branch with no upstream offers to make one.
 
 - **Files.** `space` stage · `a` stage all · `enter` open the hunks, or fold
   a directory · `d` discard the changes · `x` delete it · `i` ignore it ·
-  `c` commit window · `C` your editor · `s` stash · `o` `t` take ours or
-  theirs. The name says the state: green in the index, yellow partly in it,
+  `c` commit window · `C` your editor · `A` add the staged changes to the
+  last commit · `s` stash · `o` `t` take ours or theirs. The name says the state: green in the index, yellow partly in it,
   red not in it, dim red for a file git does not track. A file that git does
   not track shows all of its lines in the diff pane.
 - **Ignore.** `i` opens a window. `i` again writes the rule to `.gitignore`,
@@ -107,9 +109,14 @@ one runs, and the command log holds its output.
   rename · `m` merge. The newest branch is first, with `↑` and `↓` counts.
   The branch you are on comes first, and `enter` on it does nothing. A
   checkout of a branch that another worktree holds offers to go there.
+  A branch on a remote shows in grey, and `enter` makes a local branch that
+  follows it.
 - **Commits.** `enter` full graph view · `i` interactive rebase · `w` reword
-  · `v` revert · `y` put the changes in the index · `↑` marks a commit the
-  upstream branch does not have.
+  · `v` revert · `y` put the changes in the index · `R` move HEAD to this
+  commit · `↑` marks a commit the upstream branch does not have.
+- **Move HEAD.** `R` on a commit, or `enter` on a line of the `U` list.
+  Then `s` keeps your changes in the index, `m` keeps them in the work tree,
+  and `h` throws them away. The `U` list is the way back from a mistake.
 - **Bisect.** `b` start one here, or mark a bad commit · `o` mark a good one
   · `S` skip · `A` end it.
 - **Rebase.** `p` `r` `e` `s` `f` `d` set the action · `J` `K` move a commit

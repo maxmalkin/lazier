@@ -73,6 +73,11 @@ pub fn render(frame: &mut Frame, app: &App) {
             render_new_worktree(frame, body, branch, path, *on_path, app)
         }
         Mode::Ignore { pattern, tracked } => render_ignore(frame, body, pattern, *tracked),
+        Mode::Reset { target, subject } => render_reset(frame, body, target, subject),
+        Mode::Reflog { list, cursor } => {
+            let h = (list.len() as u16 + 2).min(body.height).max(4);
+            panels::render_reflog(frame, centered(body, 80, h), list, *cursor);
+        }
         Mode::CommitMsg { summary, body: text, on_body, purpose } => {
             render_commit(frame, body, summary, text, *on_body, purpose)
         }
@@ -90,6 +95,47 @@ fn centered(area: Rect, w: u16, h: u16) -> Rect {
         width: w,
         height: h,
     }
+}
+
+/// The window that moves HEAD. Each choice says what happens to the work
+/// that has no commit.
+fn render_reset(frame: &mut Frame, body: Rect, target: &str, subject: &str) {
+    let area = centered(body, 70, 8);
+    frame.render_widget(Clear, area);
+    let block = Block::bordered()
+        .title(Span::styled(
+            " Move HEAD ",
+            Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ))
+        .border_style(Style::new().fg(Color::Yellow));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let lines = vec![
+        Line::from(vec![
+            Span::styled(format!("{target} "), Style::new().fg(Color::Yellow)),
+            Span::styled(subject.to_string(), Style::new().fg(Color::White)),
+        ]),
+        Line::default(),
+        Line::from(vec![
+            Span::styled("s", KEY),
+            Span::styled("  soft ", DESC),
+            Span::styled(" your changes wait in the index", DIM),
+        ]),
+        Line::from(vec![
+            Span::styled("m", KEY),
+            Span::styled("  mixed", DESC),
+            Span::styled("  your changes wait in the work tree", DIM),
+        ]),
+        Line::from(vec![
+            Span::styled("h", KEY),
+            Span::styled("  hard ", DESC),
+            Span::styled(" your changes go away", Style::new().fg(Color::Red)),
+        ]),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: false }),
+        Rect { x: inner.x + 1, width: inner.width.saturating_sub(2), ..inner },
+    );
 }
 
 /// The window that adds a path to the ignore rules. It offers the shared
@@ -326,6 +372,7 @@ const HINTS: [Hints; 6] = [
     &[
         ("<enter>", "Checkout"),
         ("n", "New"),
+        ("F", "Force push"),
         ("d/D", "Delete"),
         ("R", "Rename"),
         ("m", "Merge"),
@@ -337,6 +384,7 @@ const HINTS: [Hints; 6] = [
         ("w", "Reword"),
         ("v", "Revert"),
         ("y", "Cherry-pick"),
+        ("R", "Reset"),
         ("b/o", "Bisect"),
     ],
     &[("<enter>", "Apply"), ("p", "Pop"), ("d", "Drop")],
@@ -426,6 +474,17 @@ fn render_bar(frame: &mut Frame, area: Rect, app: &App) {
         ]]),
         // The window draws its own keys.
         Mode::NewWorktree { .. } => Line::default(),
+        Mode::Reset { .. } => hint_line(&[&[
+            ("s", "Keep in the index"),
+            ("m", "Keep in the work tree"),
+            ("h", "Throw away"),
+            ("<esc>", "Cancel"),
+        ]]),
+        Mode::Reflog { .. } => hint_line(&[&[
+            ("<enter>", "Move HEAD there"),
+            ("j/k", "Move"),
+            ("<esc>", "Close"),
+        ]]),
         Mode::Ignore { .. } => hint_line(&[&[
             ("i", "Share the rule"),
             ("e", "Keep it to yourself"),
@@ -502,6 +561,7 @@ const HELP: &[(&str, Hints)] = &[
             ("d", "discard the changes (it asks first)"),
             ("x", "delete it from the disk (it asks first)"),
             ("i", "ignore it: i shares the rule, e keeps it to yourself"),
+            ("A", "add the staged changes to the last commit"),
             ("c / C", "open the commit window, or use the editor"),
             ("s", "put the changes in a stash"),
             ("o / t", "take ours or theirs in a conflict"),
@@ -516,7 +576,17 @@ const HELP: &[(&str, Hints)] = &[
             ("R", "give the branch a new name"),
             ("m", "merge the branch into the current one"),
             ("P / p / f", "push, pull, or fetch"),
-            ("● ↑ ↓", "current branch, to push, to pull"),
+            ("F", "force push, with a lease that protects other people"),
+            ("* ↑ ↓", "current branch, to push, to pull"),
+            ("grey name", "a branch on a remote: enter follows it"),
+        ],
+    ),
+    (
+        "Go back",
+        &[
+            ("U", "the list of places HEAD has been"),
+            ("R", "on a commit: move HEAD to it"),
+            ("s / m / h", "keep in the index, in the work tree, or not"),
         ],
     ),
     (

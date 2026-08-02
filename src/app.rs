@@ -16,7 +16,8 @@ use std::collections::HashSet;
 use crate::event::{self, Msg};
 use crate::git::rebase::{self, RebaseInfo, TodoAction, TodoItem};
 use crate::git::{
-    self, BranchEntry, CommitEntry, DiffTarget, FileEntry, Git, Req, Resp, WorktreeEntry, patch,
+    self, BranchEntry, CommitEntry, DiffTarget, FileEntry, Git, ReflogEntry, Req, Resp,
+    WorktreeEntry, patch,
 };
 use crate::keys::{Action, action_for};
 use crate::tree::{self, TreeRow};
@@ -105,6 +106,10 @@ pub enum Mode {
     NewWorktree { branch: String, path: String, on_path: bool, path_edited: bool },
     /// The window that adds a path to the ignore rules.
     Ignore { pattern: String, tracked: bool },
+    /// The window that moves HEAD to another commit.
+    Reset { target: String, subject: String },
+    /// The list of recent positions of HEAD.
+    Reflog { list: Vec<ReflogEntry>, cursor: usize },
     /// The commit message window. It has a summary line and a body.
     CommitMsg { summary: String, body: String, on_body: bool, purpose: CommitPurpose },
     /// The todo list editor of an interactive rebase. `base` is the commit
@@ -339,6 +344,41 @@ impl App {
                     let path = w.path.clone();
                     self.mode = Mode::Normal;
                     self.open_worktree(path);
+                }
+                _ => {}
+            },
+            Mode::Reset { target, .. } => {
+                let target = target.clone();
+                let go = |app: &mut Self, how: &str| {
+                    app.mode = Mode::Normal;
+                    app.write(svec(&["reset", how, &target]));
+                };
+                match key.code {
+                    // Keep the changes in the index.
+                    KeyCode::Char('s') => go(self, "--soft"),
+                    // Keep the changes in the work tree only.
+                    KeyCode::Char('m') => go(self, "--mixed"),
+                    KeyCode::Char('h') => {
+                        self.mode = Mode::Confirm {
+                            prompt: format!(
+                                "hard reset to {target}? it throws away every change that has no commit."
+                            ),
+                            action: ConfirmAction::RunAll(vec![svec(&["reset", "--hard", &target])]),
+                        };
+                    }
+                    _ => self.mode = Mode::Normal,
+                }
+            }
+            Mode::Reflog { list, cursor } => match key.code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('U') => self.mode = Mode::Normal,
+                KeyCode::Char('j') | KeyCode::Down => {
+                    *cursor = (*cursor + 1).min(list.len().saturating_sub(1))
+                }
+                KeyCode::Char('k') | KeyCode::Up => *cursor = cursor.saturating_sub(1),
+                KeyCode::Enter => {
+                    let Some(e) = list.get(*cursor) else { return };
+                    let (target, subject) = (e.at.clone(), e.what.clone());
+                    self.mode = Mode::Reset { target, subject };
                 }
                 _ => {}
             },
@@ -1046,8 +1086,45 @@ impl App {
                 }
             }
 
+            // Fold the staged changes into the last commit. The message
+            // stays as it is.
+            Action::AmendLast => {
+                self.mode = Mode::Confirm {
+                    prompt: "add the staged changes to the last commit?".into(),
+                    action: ConfirmAction::RunAll(vec![svec(&["commit", "--amend", "--no-edit"])]),
+                };
+            }
+            Action::ForcePush => {
+                let head = self.repo.head.clone().unwrap_or_else(|| "HEAD".into());
+                self.mode = Mode::Confirm {
+                    // The lease makes git refuse when the remote moved,
+                    // thus it cannot throw away work of another person.
+                    prompt: format!("force push {head}? it replaces the branch on the remote."),
+                    action: ConfirmAction::RunAll(vec![svec(&["push", "--force-with-lease"])]),
+                };
+            }
+            Action::ResetPrompt => {
+                if let Some(c) = self.repo.commits.get(self.selected[3]) {
+                    self.mode = Mode::Reset {
+                        target: c.id_str().to_string(),
+                        subject: c.subject.to_string(),
+                    };
+                }
+            }
+            Action::ReflogList => {
+                if let Some(git) = &self.git {
+                    git.send(Req::Reflog);
+                }
+            }
+
             Action::Checkout => {
                 let Some(b) = self.repo.branches.get(self.selected[2]) else { return };
+                // A remote branch needs a local one that follows it.
+                if b.remote {
+                    let name = b.name.clone();
+                    self.write(svec(&["checkout", "--track", &name]));
+                    return;
+                }
                 // A checkout of the branch you are on does nothing, but it
                 // still reads every file. Do not run it.
                 if b.current {
@@ -1235,6 +1312,17 @@ impl App {
                         action: ConfirmAction::GoToWorktree(path),
                     };
                 }
+                // A push fails when the branch has no upstream. Offer to
+                // make one, which is what the user wants nearly every time.
+                if !ok
+                    && output.iter().any(|l| l.contains("has no upstream branch"))
+                    && let Some(head) = self.repo.head.clone()
+                {
+                    self.mode = Mode::Confirm {
+                        prompt: format!("{head} has no upstream. push it to origin and follow it?"),
+                        action: ConfirmAction::RunAll(vec![svec(&["push", "-u", "origin", &head])]),
+                    };
+                }
                 // A worktree command changes the list, thus open it again
                 // with the new content.
                 let was_worktree = cmd.contains("worktree");
@@ -1267,6 +1355,7 @@ impl App {
                 self.repo.unpushed = unpushed;
             }
             Resp::Worktrees(list) => self.mode = Mode::Worktrees { list, cursor: 0 },
+            Resp::Reflog(list) => self.mode = Mode::Reflog { list, cursor: 0 },
         }
     }
 
@@ -1389,6 +1478,7 @@ mod tests {
                     ahead,
                     behind,
                     gone: false,
+                    remote: false,
                     age: age.into(),
                 })
                 .collect();
@@ -1731,10 +1821,61 @@ mod tests {
             ahead,
             behind,
             gone: false,
+            remote: false,
             age: "2d".into(),
         })
         .collect();
         insta::assert_snapshot!(draw(&app, 80, 24).backend());
+    }
+
+    #[test]
+    fn reset_window() {
+        let mut app = demo();
+        app.mode = Mode::Reset { target: "0a0c003".into(), subject: "fake: commit subject #3".into() };
+        insta::assert_snapshot!(draw(&app, 100, 30).backend());
+    }
+
+    #[test]
+    fn reflog_window() {
+        let mut app = demo();
+        app.mode = Mode::Reflog {
+            list: [
+                ("a1b2c3d", "HEAD@{0}", "commit: feat: add the thing"),
+                ("d4e5f6a", "HEAD@{1}", "rebase (finish): returning to refs/heads/main"),
+                ("9876543", "HEAD@{2}", "checkout: moving from main to feature/x"),
+            ]
+            .into_iter()
+            .map(|(id, at, what)| ReflogEntry {
+                id: id.into(),
+                at: at.into(),
+                what: what.into(),
+            })
+            .collect(),
+            cursor: 1,
+        };
+        insta::assert_snapshot!(draw(&app, 100, 30).backend());
+    }
+
+    // A branch on a remote needs a local branch that follows it.
+    #[test]
+    fn a_remote_branch_is_followed_not_switched_to() {
+        let mut app = demo();
+        app.focus = 2;
+        app.repo.branches.push(BranchEntry {
+            name: "origin/theirs".into(),
+            current: false,
+            ahead: 0,
+            behind: 0,
+            gone: false,
+            age: "1d".into(),
+            remote: true,
+        });
+        app.selected[2] = app.repo.branches.len() - 1;
+        app.apply(Action::Checkout);
+        // No git worker runs in a test, thus check that no message of
+        // refusal appeared and the mode stayed normal.
+        assert!(app.message.is_empty());
+        assert!(matches!(app.mode, Mode::Normal));
     }
 
     #[test]

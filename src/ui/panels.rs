@@ -140,6 +140,8 @@ fn branch_line(b: &BranchEntry, width: usize, spinner: Option<char>) -> Line<'st
     // The age takes five columns and the mark takes two.
     let room = width.saturating_sub(7 + tail_width).max(3);
 
+    // A branch that lives on a remote shows in a quieter color.
+    let name_style = if b.remote { Style::new().fg(Color::DarkGray) } else { name_style };
     let mut spans = vec![
         // The age column comes first, as lazygit shows it.
         Span::styled(format!("{:>4} ", b.age), Style::new().fg(Color::Cyan)),
@@ -456,6 +458,26 @@ pub fn render_worktrees(
             ),
             Span::styled(shorten(&path, room), Style::new().fg(Color::Gray)),
             Span::styled(tag, Style::new().fg(if w.prunable { Color::Red } else { Color::DarkGray })),
+        ])
+    });
+}
+
+/// The recent positions of HEAD. It is the way back from a mistake.
+pub fn render_reflog(
+    frame: &mut Frame,
+    area: Rect,
+    list: &[crate::git::ReflogEntry],
+    cursor: usize,
+) {
+    frame.render_widget(Clear, area);
+    let width = area.width.saturating_sub(2) as usize;
+    list::render(frame, area, " Where HEAD has been ", true, cursor, list.len(), &|i| {
+        let e = &list[i];
+        let room = width.saturating_sub(e.id.len() + e.at.len() + 3).max(6);
+        Line::from(vec![
+            Span::styled(format!("{} ", e.id), Style::new().fg(Color::Yellow)),
+            Span::styled(format!("{:<14.14} ", e.at), Style::new().fg(Color::Cyan)),
+            Span::styled(shorten(&e.what, room), Style::new().fg(Color::Gray)),
         ])
     });
 }
