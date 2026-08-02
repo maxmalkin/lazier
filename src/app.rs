@@ -91,6 +91,8 @@ pub enum ConfirmAction {
     GoToWorktree(String),
     /// Make a fixup commit for a commit, then fold it in.
     Fixup(String),
+    /// Stage every change, then open the commit window.
+    StageAllThenCommit,
     /// Run each command in order. Discard and delete need two commands,
     /// because tracked files and new files need different treatment.
     RunAll(Vec<Vec<String>>),
@@ -171,6 +173,9 @@ pub struct App {
     /// The commit that a fixup goes into. The rebase waits for the fixup
     /// commit to exist.
     pending_fixup: Option<String>,
+    /// True while the staging of every change runs before the commit
+    /// window opens.
+    pending_commit_window: bool,
     pause: Arc<AtomicBool>,
     /// A copy of the message sender. A move to another worktree needs it to
     /// start new workers.
@@ -205,6 +210,7 @@ impl App {
             pending_suspend: None,
             pending_open: None,
             pending_fixup: None,
+            pending_commit_window: false,
             pause: Arc::new(AtomicBool::new(false)),
             tx: None,
         }
@@ -613,6 +619,13 @@ impl App {
                             self.write(svec(&["commit", &format!("--fixup={id}")]));
                             return;
                         }
+                        // The window waits for the staging to finish, thus
+                        // it opens over a state that is already correct.
+                        ConfirmAction::StageAllThenCommit => {
+                            self.pending_commit_window = true;
+                            self.write(svec(&["add", "-A"]));
+                            return;
+                        }
                         _ => {}
                     }
                     let args: Vec<String> = match action {
@@ -629,7 +642,8 @@ impl App {
                         }
                         ConfirmAction::RunAll(_)
                         | ConfirmAction::GoToWorktree(_)
-                        | ConfirmAction::Fixup(_) => return,
+                        | ConfirmAction::Fixup(_)
+                        | ConfirmAction::StageAllThenCommit => return,
                     };
                     self.write(args);
                 }
@@ -719,6 +733,15 @@ impl App {
             InputPurpose::Shell => return,
         };
         self.write(args);
+    }
+
+    fn open_commit_window(&mut self) {
+        self.mode = Mode::CommitMsg {
+            summary: String::new(),
+            body: String::new(),
+            on_body: false,
+            purpose: CommitPurpose::New,
+        };
     }
 
     /// Commit with the summary and the body. Git puts an empty line between
@@ -1094,12 +1117,24 @@ impl App {
             }
             Action::StageAll => self.write(svec(&["add", "-A"])),
             Action::CommitPrompt => {
-                self.mode = Mode::CommitMsg {
-                    summary: String::new(),
-                    body: String::new(),
-                    on_body: false,
-                    purpose: CommitPurpose::New,
-                };
+                let staged = self.repo.files.iter().any(|f| f.staged());
+                match (staged, self.repo.files.is_empty()) {
+                    // Nothing is staged and nothing has changed.
+                    (false, true) => {
+                        self.mode = Mode::Error {
+                            cmd: "commit".into(),
+                            output: vec!["there is nothing to commit".into()],
+                        };
+                    }
+                    // Changes are there, but none of them are staged yet.
+                    (false, false) => {
+                        self.mode = Mode::Confirm {
+                            prompt: "nothing is staged. stage every change, new files too, and commit?".into(),
+                            action: ConfirmAction::StageAllThenCommit,
+                        };
+                    }
+                    _ => self.open_commit_window(),
+                }
             }
             Action::CommitEditor => self.suspend(svec(&["commit"])),
             Action::StashPrompt => {
@@ -1530,6 +1565,13 @@ impl App {
                         ));
                     }
                 }
+                // The staging is done, thus the commit window can open.
+                if self.pending_commit_window && cmd.contains("add -A") {
+                    self.pending_commit_window = false;
+                    if ok {
+                        self.open_commit_window();
+                    }
+                }
                 // A worktree command changes the list, thus open it again
                 // with the new content.
                 let was_worktree = cmd.contains("worktree");
@@ -1821,6 +1863,57 @@ mod tests {
             purpose: CommitPurpose::Reword(0),
         };
         insta::assert_snapshot!(draw(&app, 100, 30).backend());
+    }
+
+    // A commit with nothing to commit must say so, not open a window that
+    // cannot work.
+    #[test]
+    fn commit_with_no_changes_reports_it() {
+        let mut app = demo();
+        app.repo.files.clear();
+        app.rebuild_tree();
+        app.apply(Action::CommitPrompt);
+        match &app.mode {
+            Mode::Error { output, .. } => assert!(output[0].contains("nothing to commit")),
+            _ => panic!("expected the failure window"),
+        }
+    }
+
+    // With changes but nothing staged, offer to stage them all.
+    #[test]
+    fn commit_with_nothing_staged_offers_to_stage() {
+        let mut app = demo();
+        for f in &mut app.repo.files {
+            f.index = ' ';
+        }
+        app.apply(Action::CommitPrompt);
+        assert!(
+            matches!(&app.mode, Mode::Confirm { action: ConfirmAction::StageAllThenCommit, .. }),
+            "expected the offer to stage everything"
+        );
+        // Saying yes stages first. The window waits for that to finish.
+        app.handle_key(ratatui::crossterm::event::KeyEvent::new(
+            KeyCode::Char('y'),
+            ratatui::crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(app.pending_commit_window);
+        assert!(matches!(app.mode, Mode::Normal), "the window is not open yet");
+        app.apply_resp(Resp::WriteDone {
+            ok: true,
+            cmd: "git add -A".into(),
+            output: Vec::new(),
+            ms: 4,
+        });
+        assert!(matches!(app.mode, Mode::CommitMsg { .. }), "now it opens");
+    }
+
+    // With something staged, go straight to the window.
+    #[test]
+    fn commit_with_staged_files_opens_the_window() {
+        let mut app = demo();
+        assert!(app.repo.files.iter().any(|f| f.staged()));
+        app.apply(Action::CommitPrompt);
+        assert!(matches!(app.mode, Mode::CommitMsg { .. }));
     }
 
     #[test]
