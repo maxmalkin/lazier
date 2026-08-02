@@ -1,12 +1,11 @@
-```
-$$\                     $$\
-$$ |                    \__|
-$$ | $$$$$$\  $$$$$$$$\ $$\  $$$$$$\   $$$$$$\
-$$ | \____$$\ \____$$  |$$ |$$  __$$\ $$  __$$\
-$$ | $$$$$$$ |  $$$$ _/ $$ |$$$$$$$$ |$$ |  \__|
-$$ |$$  __$$ | $$  _/   $$ |$$   ____|$$ |
-$$ |\$$$$$$$ |$$$$$$$$\ $$ |\$$$$$$$\ $$ |
-\__| \_______|\________|\__| \_______|\__|
+```  ,,                     ,,                 
+`7MM                     db                 
+  MM                                        
+  MM   ,6"Yb.  M"""MMV `7MM  .gP"Ya `7Mb,od8
+  MM  8)   MM  '  AMV    MM ,M'   Yb  MM' "'
+  MM   ,pm9MM    AMV     MM 8M""""""  MM    
+  MM  8M   MM   AMV  ,   MM YM.    ,  MM    
+.JMML.`Moo9^Yo.AMMmmmM .JMML.`Mbmmd'.JMML.    
 ```
 
 [![ci](https://github.com/maxmalkin/lazier/actions/workflows/ci.yml/badge.svg)](https://github.com/maxmalkin/lazier/actions/workflows/ci.yml)
