@@ -395,7 +395,7 @@ const HINTS: [Hints; 6] = [
         ("i", "Ignore"),
         ("s", "Stash"),
         ("<enter>", "Hunks"),
-        ("C", "Editor"),
+        ("e", "Open it"),
         ("o/t", "Ours/theirs"),
     ],
     &[
@@ -413,14 +413,21 @@ const HINTS: [Hints; 6] = [
         ("w", "Reword"),
         ("v", "Revert"),
         ("y", "Cherry-pick"),
+        ("f", "Fixup"),
+        ("t", "Tag"),
+        ("c", "Copy id"),
         ("R", "Reset"),
-        ("b/o", "Bisect"),
     ],
     &[("<enter>", "Apply"), ("p", "Pop"), ("d", "Drop")],
     &[("j/k", "Scroll"), ("g/G", "Top/bottom")],
 ];
-const GLOBAL_HINTS: Hints =
-    &[("P/p/f", "Push/pull/fetch"), (":", "Shell"), ("?", "Keys"), ("@", "Log"), ("q", "Quit")];
+const GLOBAL_HINTS: Hints = &[
+    ("P/p/f", "Push/pull/fetch"),
+    ("/", "Search"),
+    (":", "Shell"),
+    ("?", "Keys"),
+    ("q", "Quit"),
+];
 
 // Make one line of "Desc: key | Desc: key", the shape lazygit uses.
 fn hint_line(groups: &[Hints]) -> Line<'static> {
@@ -593,6 +600,7 @@ const HELP: &[(&str, Hints)] = &[
             ("x", "delete it from the disk (it asks first)"),
             ("i", "ignore it: i shares the rule, e keeps it to yourself"),
             ("A", "add the staged changes to the last commit"),
+            ("e", "open the file in your editor"),
             ("c / C", "open the commit window, or use the editor"),
             ("s", "put the changes in a stash"),
             ("o / t", "take ours or theirs in a conflict"),
@@ -646,6 +654,10 @@ const HELP: &[(&str, Hints)] = &[
             ("w", "give the commit a new message"),
             ("v", "revert the commit"),
             ("y", "put its changes in the index, with no commit"),
+            ("f", "fold the staged changes into this commit"),
+            ("t / T", "make a tag here, or push every tag"),
+            ("c", "copy the id to the clipboard"),
+            ("/ esc", "search the messages, or show them all again"),
             ("↑", "this commit is not on the upstream branch"),
         ],
     ),

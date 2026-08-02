@@ -44,6 +44,10 @@ pub struct RepoState {
     pub bisecting: bool,
     /// Short ids of commits that the upstream branch does not have.
     pub unpushed: HashSet<String>,
+    /// The tags of each commit, by the short id of the commit.
+    pub tags: std::collections::HashMap<String, Vec<String>>,
+    /// The text that the commit list was searched for, if any.
+    pub filter: Option<String>,
 }
 
 pub enum InputPurpose {
@@ -52,6 +56,10 @@ pub enum InputPurpose {
     StashMsg,
     /// Run the text through the shell.
     Shell,
+    /// Make a tag on a commit.
+    Tag(String),
+    /// Search the messages of the commits.
+    Search,
 }
 
 /// What the commit window does when the user sends it.
@@ -79,6 +87,8 @@ pub enum ConfirmAction {
     RemoveWorktree(String),
     /// Go to the worktree that holds a branch.
     GoToWorktree(String),
+    /// Make a fixup commit for a commit, then fold it in.
+    Fixup(String),
     /// Run each command in order. Discard and delete need two commands,
     /// because tracked files and new files need different treatment.
     RunAll(Vec<Vec<String>>),
@@ -150,6 +160,11 @@ pub struct App {
     diff_seq: u64,
     diff_target: Option<DiffTarget>,
     pending_suspend: Option<(Vec<String>, Vec<(String, String)>)>,
+    /// A program and a file to open in it, outside the interface.
+    pending_open: Option<(String, String)>,
+    /// The commit that a fixup goes into. The rebase waits for the fixup
+    /// commit to exist.
+    pending_fixup: Option<String>,
     pause: Arc<AtomicBool>,
     /// A copy of the message sender. A move to another worktree needs it to
     /// start new workers.
@@ -182,6 +197,8 @@ impl App {
             diff_seq: 0,
             diff_target: None,
             pending_suspend: None,
+            pending_open: None,
+            pending_fixup: None,
             pause: Arc::new(AtomicBool::new(false)),
             tx: None,
         }
@@ -228,6 +245,9 @@ impl App {
             if let Some((args, envs)) = self.pending_suspend.take() {
                 self.suspend_and_run(terminal, args, envs)?;
             }
+            if let Some((program, file)) = self.pending_open.take() {
+                self.suspend_and_open(terminal, program, file)?;
+            }
         }
         let _ = execute!(std::io::stdout(), DisableMouseCapture);
         Ok(())
@@ -265,6 +285,40 @@ impl App {
         };
         let ms = start.elapsed().as_millis() as u64;
         self.log_cmd(ok, format!("git {}", args.join(" ")), ms, err.into_iter().collect());
+        self.refresh_all();
+        Ok(())
+    }
+
+    /// Give the terminal to another program, for example an editor.
+    fn suspend_and_open(
+        &mut self,
+        terminal: &mut DefaultTerminal,
+        program: String,
+        file: String,
+    ) -> Result<()> {
+        let Some(git) = &self.git else { return Ok(()) };
+        let root = git.root.clone();
+        self.pause.store(true, Ordering::Relaxed);
+        disable_raw_mode()?;
+        execute!(std::io::stdout(), DisableMouseCapture, LeaveAlternateScreen)?;
+        // The program name can hold flags, thus give it to the shell.
+        let (shell, flag) = if cfg!(windows) { ("cmd", "/C") } else { ("sh", "-c") };
+        let status = std::process::Command::new(shell)
+            .arg(flag)
+            .arg(format!("{program} \"{file}\""))
+            .current_dir(&root)
+            .status();
+        enable_raw_mode()?;
+        execute!(std::io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
+        terminal.clear()?;
+        self.pause.store(false, Ordering::Relaxed);
+        let ok = matches!(&status, Ok(s) if s.success());
+        let err = match status {
+            Ok(s) if s.success() => Vec::new(),
+            Ok(s) => vec![s.to_string()],
+            Err(e) => vec![e.to_string()],
+        };
+        self.log_cmd(ok, format!("{program} {file}"), 0, err);
         self.refresh_all();
         Ok(())
     }
@@ -515,6 +569,14 @@ impl App {
                             return;
                         }
                         ConfirmAction::GoToWorktree(path) => return self.open_worktree(path),
+                        // The fixup commit must exist before the rebase can
+                        // fold it in. The write runs on another thread, thus
+                        // the rebase waits for the result of the commit.
+                        ConfirmAction::Fixup(id) => {
+                            self.pending_fixup = Some(id.clone());
+                            self.write(svec(&["commit", &format!("--fixup={id}")]));
+                            return;
+                        }
                         _ => {}
                     }
                     let args: Vec<String> = match action {
@@ -529,7 +591,9 @@ impl App {
                         ConfirmAction::RemoveWorktree(path) => {
                             svec(&["worktree", "remove", &path])
                         }
-                        ConfirmAction::RunAll(_) | ConfirmAction::GoToWorktree(_) => return,
+                        ConfirmAction::RunAll(_)
+                        | ConfirmAction::GoToWorktree(_)
+                        | ConfirmAction::Fixup(_) => return,
                     };
                     self.write(args);
                 }
@@ -604,6 +668,18 @@ impl App {
             InputPurpose::NewBranch => svec(&["checkout", "-b", &buffer]),
             InputPurpose::RenameBranch(old) => svec(&["branch", "-m", &old, &buffer]),
             InputPurpose::StashMsg => svec(&["stash", "push", "-m", &buffer]),
+            // Always make a tag with a message. Some settings turn every
+            // tag into one that needs a message, and then a plain tag fails.
+            InputPurpose::Tag(id) => svec(&["tag", "-a", &buffer, "-m", &buffer, &id]),
+            InputPurpose::Search => {
+                self.repo.filter = Some(buffer.clone());
+                self.selected[3] = 0;
+                self.focus = 3;
+                if let Some(git) = &self.git {
+                    git.send(Req::LogFilter(Some(buffer)));
+                }
+                return;
+            }
             InputPurpose::Shell => return,
         };
         self.write(args);
@@ -1114,6 +1190,57 @@ impl App {
                     };
                 }
             }
+            Action::CopyId => {
+                if let Some(c) = self.repo.commits.get(self.selected[3])
+                    && let Some(git) = &self.git
+                {
+                    git.send(Req::Copy(c.id_str().to_string()));
+                }
+            }
+            Action::TagPrompt => {
+                if let Some(c) = self.repo.commits.get(self.selected[3]) {
+                    self.mode = Mode::Input {
+                        prompt: "name for the tag",
+                        buffer: String::new(),
+                        purpose: InputPurpose::Tag(c.id_str().to_string()),
+                    };
+                }
+            }
+            Action::PushTags => self.write(svec(&["push", "--tags"])),
+            // Make a commit that git can fold into an older one, then fold
+            // it. Git makes the todo list itself, thus no editor is needed.
+            Action::FixupInto => {
+                let Some(c) = self.repo.commits.get(self.selected[3]) else { return };
+                let id = c.id_str().to_string();
+                let subject = c.subject.to_string();
+                self.mode = Mode::Confirm {
+                    prompt: format!("fold the staged changes into {id} \"{subject}\"?"),
+                    action: ConfirmAction::Fixup(id),
+                };
+            }
+            Action::OpenInEditor => {
+                let Some(f) = self.selected_file() else { return };
+                let path = f.path.clone();
+                let editor = std::env::var("VISUAL")
+                    .or_else(|_| std::env::var("EDITOR"))
+                    .unwrap_or_else(|_| "vi".into());
+                self.pending_open = Some((editor, path));
+            }
+            Action::SearchPrompt => {
+                self.mode = Mode::Input {
+                    prompt: "search the commit messages",
+                    buffer: String::new(),
+                    purpose: InputPurpose::Search,
+                };
+            }
+            Action::ClearFilter => {
+                if self.repo.filter.take().is_some() {
+                    self.selected[3] = 0;
+                    if let Some(git) = &self.git {
+                        git.send(Req::LogFilter(None));
+                    }
+                }
+            }
             Action::ReflogList => {
                 if let Some(git) = &self.git {
                     git.send(Req::Reflog);
@@ -1326,6 +1453,19 @@ impl App {
                         action: ConfirmAction::RunAll(vec![svec(&["push", "-u", "origin", &head])]),
                     };
                 }
+                // The fixup commit is there now, thus the rebase can fold
+                // it in. Git makes the todo list itself, so the sequence
+                // editor only has to accept it.
+                if let Some(id) = self.pending_fixup.take()
+                    && cmd.contains("--fixup=")
+                {
+                    if ok {
+                        self.pending_suspend = Some((
+                            svec(&["rebase", "--autosquash", "--autostash", &format!("{id}^")]),
+                            vec![("GIT_SEQUENCE_EDITOR".into(), "true".into())],
+                        ));
+                    }
+                }
                 // A worktree command changes the list, thus open it again
                 // with the new content.
                 let was_worktree = cmd.contains("worktree");
@@ -1366,6 +1506,7 @@ impl App {
             }
             Resp::Worktrees(list) => self.mode = Mode::Worktrees { list, cursor: 0 },
             Resp::Reflog(list) => self.mode = Mode::Reflog { list, cursor: 0 },
+            Resp::Tags(map) => self.repo.tags = map,
         }
     }
 
@@ -1382,7 +1523,7 @@ impl App {
 
     fn refresh_all(&mut self) {
         let Some(git) = &self.git else { return };
-        for req in [Req::Status, Req::Branches, Req::Stashes, Req::Sync] {
+        for req in [Req::Status, Req::Branches, Req::Stashes, Req::Sync, Req::Tags] {
             git.send(req);
         }
         // The log thread walks again only when HEAD moved. A stage or a
@@ -1414,6 +1555,9 @@ impl App {
                 untracked: f.work == '?',
             }),
             3 => self.repo.commits.get(self.selected[3]).map(|c| DiffTarget::Commit(c.id_str().to_string())),
+            // A stash shows its own changes, thus you can look before you
+            // put them back.
+            4 => (self.selected[4] < self.repo.stashes.len()).then(|| DiffTarget::Stash(self.selected[4])),
             _ => None,
         };
         if target.is_some() && target != self.diff_target {

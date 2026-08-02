@@ -61,7 +61,7 @@ fn author_color(author: &str) -> Color {
     PALETTE[sum as usize % PALETTE.len()]
 }
 
-fn commit_line(c: &CommitEntry, zoomed: bool, unpushed: bool) -> Line<'static> {
+fn commit_line(c: &CommitEntry, zoomed: bool, unpushed: bool, tags: &[String]) -> Line<'static> {
     // The order matches lazygit: id, author, graph, then the subject.
     let mut spans = vec![
         Span::styled(c.id_str().to_string(), Style::new().fg(Color::Yellow)),
@@ -77,8 +77,20 @@ fn commit_line(c: &CommitEntry, zoomed: bool, unpushed: bool) -> Line<'static> {
     if unpushed {
         spans.push(Span::styled("↑", Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
     }
+    // A tag sits before the subject, as git shows it.
+    for t in tags {
+        spans.push(Span::styled(
+            format!(" {t}"),
+            Style::new().fg(Color::LightYellow).add_modifier(Modifier::BOLD),
+        ));
+    }
     spans.push(Span::raw(format!(" {}", c.subject)));
     Line::from(spans)
+}
+
+// The tags of a commit, or nothing.
+fn tags_of<'a>(app: &'a App, c: &CommitEntry) -> &'a [String] {
+    app.repo.tags.get(c.id_str()).map(Vec::as_slice).unwrap_or(&[])
 }
 
 // Convert epoch seconds to a calendar date. This uses the civil-from-days
@@ -226,7 +238,7 @@ pub fn render_left(frame: &mut Frame, areas: [Rect; 5], app: &App) {
         &|i| branch_line(&repo.branches[i], branch_width, spinner),
         &|i| {
             let c = &repo.commits[i];
-            commit_line(c, false, repo.unpushed.contains(c.id_str()))
+            commit_line(c, false, repo.unpushed.contains(c.id_str()), tags_of(app, c))
         },
         &|i| {
             // Color the stash name before the colon.
@@ -240,9 +252,13 @@ pub fn render_left(frame: &mut Frame, areas: [Rect; 5], app: &App) {
             }
         },
     ];
-    // Each title carries the key that focuses the panel.
+    // Each title carries the key that focuses the panel. A search shows in
+    // the title of the commits panel, thus the list is never a surprise.
     for (i, area) in areas.into_iter().enumerate() {
-        let title = format!("[{}]─{}", i + 1, PANELS[i]);
+        let title = match (i, &repo.filter) {
+            (3, Some(text)) => format!("[4]─Commits─search: {text}"),
+            _ => format!("[{}]─{}", i + 1, PANELS[i]),
+        };
         list::render(frame, area, &title, app.focus == i, app.selected[i], app.panel_len(i), rows[i]);
     }
 }
@@ -260,7 +276,7 @@ pub fn render_zoom(frame: &mut Frame, area: Rect, app: &App) {
         app.panel_len(3),
         &|i| {
             let c = &repo.commits[i];
-            commit_line(c, true, repo.unpushed.contains(c.id_str()))
+            commit_line(c, true, repo.unpushed.contains(c.id_str()), tags_of(app, c))
         },
     );
 }

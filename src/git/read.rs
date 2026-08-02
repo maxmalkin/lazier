@@ -101,6 +101,42 @@ pub fn stashes(repo: &gix::Repository) -> Option<Resp> {
     Some(Resp::Stashes(out))
 }
 
+/// Find the commits whose message holds the text. Git searches the whole
+/// history, thus this finds more than the part that is in memory.
+fn search(root: &std::path::Path, text: &str) -> Vec<CommitEntry> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args([
+            "log",
+            "-n",
+            "500",
+            "--fixed-strings",
+            "--regexp-ignore-case",
+            &format!("--grep={text}"),
+            "--format=%h%x09%an%x09%ct%x09%s",
+        ])
+        .output();
+    let Ok(out) = out else { return Vec::new() };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut p = line.split('\t');
+            let hex = p.next()?;
+            let mut id = [b'0'; 7];
+            let bytes = hex.as_bytes();
+            id[..7.min(bytes.len())].copy_from_slice(&bytes[..7.min(bytes.len())]);
+            Some(CommitEntry {
+                id,
+                graph: "".into(),
+                author: p.next().unwrap_or("").into(),
+                time: p.next().unwrap_or("0").parse().unwrap_or(0),
+                subject: p.next().unwrap_or("").into(),
+            })
+        })
+        .collect()
+}
+
 // Start a walk from HEAD, the newest commit first.
 fn start_walk(repo: &gix::Repository) -> Option<gix::revision::Walk<'_>> {
     repo.head_id().ok().and_then(|id| {
@@ -114,7 +150,12 @@ fn start_walk(repo: &gix::Repository) -> Option<gix::revision::Walk<'_>> {
 /// This thread owns the ancestor walker for its full life. The walker
 /// borrows the thread-local repository, thus both stay in this stack frame.
 /// Each request pulls the next `count` commits from the walker.
-pub fn log_thread(shared: Arc<gix::ThreadSafeRepository>, rx: Receiver<LogReq>, ev: Sender<Msg>) {
+pub fn log_thread(
+    shared: Arc<gix::ThreadSafeRepository>,
+    root: std::path::PathBuf,
+    rx: Receiver<LogReq>,
+    ev: Sender<Msg>,
+) {
     let mut repo = shared.to_thread_local();
     // The cache keeps decoded delta bases. Without it, the walk decodes the
     // same base objects again for each commit.
@@ -125,10 +166,42 @@ pub fn log_thread(shared: Arc<gix::ThreadSafeRepository>, rx: Receiver<LogReq>, 
     // False until the first chunk goes out. The first refresh must fill the
     // panel, even though HEAD has not moved since the thread started.
     let mut sent_any = false;
+    let mut filter: Option<String> = None;
     for req in rx {
         let mut replace = false;
         let count = match req {
+            // A search runs over the whole history, thus git does it. The
+            // results are not next to each other, so they carry no graph.
+            LogReq::Filter(text) => {
+                filter = text;
+                let entries = match &filter {
+                    Some(text) => search(&root, text),
+                    None => Vec::new(),
+                };
+                if filter.is_some() {
+                    let _ = ev.send(Msg::Git(Resp::LogReplace { entries, done: true }));
+                    continue;
+                }
+                // No filter any more: walk the history from HEAD again.
+                walk = start_walk(&repo);
+                graph = super::graph::Graph::new();
+                replace = true;
+                100
+            }
+            LogReq::Chunk(count) if filter.is_some() => {
+                // A filtered list is complete already.
+                let _ = ev.send(Msg::Git(Resp::LogChunk { entries: Vec::new(), done: true }));
+                let _ = count;
+                continue;
+            }
             LogReq::Chunk(count) => count,
+            // A filtered list does not follow HEAD, thus a refresh runs the
+            // search again.
+            LogReq::Refresh(_) if filter.is_some() => {
+                let entries = search(&root, filter.as_deref().unwrap_or(""));
+                let _ = ev.send(Msg::Git(Resp::LogReplace { entries, done: true }));
+                continue;
+            }
             LogReq::Refresh(count) => {
                 let now = repo.head_id().ok().map(|id| id.detach());
                 // The list is still correct when HEAD did not move. A walk

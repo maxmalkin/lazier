@@ -76,6 +76,9 @@ pub enum LogReq {
     /// Look at HEAD. Walk again only when HEAD moved. A refresh after a
     /// stage or a fetch must not throw away a long list of commits.
     Refresh(usize),
+    /// Show only the commits whose message holds this text. None gives the
+    /// whole history again.
+    Filter(Option<String>),
 }
 
 pub enum Req {
@@ -84,6 +87,7 @@ pub enum Req {
     Stashes,
     LogChunk { count: usize },
     LogRefresh { count: usize },
+    LogFilter(Option<String>),
     Diff { seq: u64, target: DiffTarget },
     /// Run a git command with the given arguments. Capture the output.
     Write(Vec<String>),
@@ -97,6 +101,10 @@ pub enum Req {
     Worktrees,
     /// List the recent positions of HEAD.
     Reflog,
+    /// Put text on the clipboard of the system.
+    Copy(String),
+    /// Read the tags, so the commit rows can show them.
+    Tags,
     /// Run a command line through the shell, in the root of the repository.
     Shell(String),
     /// Add a pattern to the ignore rules. `local` writes to the private
@@ -121,6 +129,8 @@ pub enum DiffTarget {
     /// diff needs another command.
     WorktreeFile { path: String, untracked: bool },
     Commit(String),
+    /// A stash entry, by its position in the list.
+    Stash(usize),
 }
 
 pub enum Resp {
@@ -140,6 +150,8 @@ pub enum Resp {
     Message { text: String, index: usize },
     Worktrees(Vec<WorktreeEntry>),
     Reflog(Vec<ReflogEntry>),
+    /// A tag name for each commit that carries one.
+    Tags(std::collections::HashMap<String, Vec<String>>),
 }
 
 pub struct Git {
@@ -178,6 +190,9 @@ impl Git {
             Req::LogRefresh { count } => {
                 let _ = self.log_tx.send(LogReq::Refresh(count));
             }
+            Req::LogFilter(text) => {
+                let _ = self.log_tx.send(LogReq::Filter(text));
+            }
             _ => {
                 let _ = self.tx.send(req);
             }
@@ -204,8 +219,8 @@ pub fn spawn(event_tx: Sender<Msg>) -> anyhow::Result<Git> {
     let (tx, rx) = channel::<Req>();
     let (log_tx, log_rx) = channel::<LogReq>();
 
-    let (repo, ev) = (shared.clone(), event_tx.clone());
-    std::thread::spawn(move || read::log_thread(repo, log_rx, ev));
+    let (repo, ev, log_root) = (shared.clone(), event_tx.clone(), root.clone());
+    std::thread::spawn(move || read::log_thread(repo, log_root, log_rx, ev));
 
     let worker_root = root.clone();
     let scanning = Arc::new(AtomicBool::new(false));
@@ -262,6 +277,26 @@ pub fn spawn(event_tx: Sender<Msg>) -> anyhow::Result<Git> {
                 Req::Sync => Some(sync_state(&worker_root)),
                 Req::Worktrees => Some(Resp::Worktrees(worktrees(&worker_root))),
                 Req::Reflog => Some(Resp::Reflog(reflog(&worker_root))),
+                Req::Tags => Some(Resp::Tags(tags(&worker_root))),
+                Req::Copy(text) => {
+                    let start = std::time::Instant::now();
+                    let result = copy_to_clipboard(&text);
+                    let ms = start.elapsed().as_millis() as u64;
+                    Some(match result {
+                        Ok(()) => Resp::WriteDone {
+                            ok: true,
+                            cmd: format!("copy {text}"),
+                            output: Vec::new(),
+                            ms,
+                        },
+                        Err(e) => Resp::WriteDone {
+                            ok: false,
+                            cmd: format!("copy {text}"),
+                            output: vec![e],
+                            ms,
+                        },
+                    })
+                }
                 Req::Ignore { pattern, local } => {
                     // The private file lives in the common directory, thus
                     // every worktree of the repository shares it.
@@ -301,7 +336,7 @@ pub fn spawn(event_tx: Sender<Msg>) -> anyhow::Result<Git> {
                         .unwrap_or_default();
                     Some(Resp::Message { text, index })
                 }
-                Req::LogChunk { .. } | Req::LogRefresh { .. } => None,
+                Req::LogChunk { .. } | Req::LogRefresh { .. } | Req::LogFilter(_) => None,
             };
             if let Some(resp) = resp
                 && event_tx.send(Msg::Git(resp)).is_err()
@@ -454,6 +489,60 @@ fn branches(root: &PathBuf) -> Vec<BranchEntry> {
     list
 }
 
+/// The tags of each commit, by the short id of the commit. A tag can point
+/// at a tag object, thus the id is the one after the peel.
+fn tags(root: &PathBuf) -> std::collections::HashMap<String, Vec<String>> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args([
+            "for-each-ref",
+            "--format=%(refname:short)%09%(objectname:short=7)%09%(*objectname:short=7)",
+            "refs/tags/",
+        ])
+        .output();
+    let Ok(out) = out else { return Default::default() };
+    let mut map: std::collections::HashMap<String, Vec<String>> = Default::default();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let mut p = line.split('\t');
+        let Some(name) = p.next() else { continue };
+        let direct = p.next().unwrap_or("");
+        let peeled = p.next().unwrap_or("");
+        // An annotated tag gives the commit in the second column.
+        let id = if peeled.is_empty() { direct } else { peeled };
+        if !id.is_empty() {
+            map.entry(id.to_string()).or_default().push(name.to_string());
+        }
+    }
+    map
+}
+
+/// Put text on the clipboard. Each system has its own program for it.
+fn copy_to_clipboard(text: &str) -> Result<(), String> {
+    let candidates: &[(&str, &[&str])] = if cfg!(target_os = "macos") {
+        &[("pbcopy", &[])]
+    } else if cfg!(windows) {
+        &[("clip", &[])]
+    } else {
+        &[("wl-copy", &[]), ("xclip", &["-selection", "clipboard"]), ("xsel", &["-ib"])]
+    };
+    for (program, args) in candidates {
+        let child = Command::new(program).args(*args).stdin(Stdio::piped()).spawn();
+        if let Ok(mut child) = child {
+            let ok = child
+                .stdin
+                .take()
+                .map(|mut s| s.write_all(text.as_bytes()).is_ok())
+                .unwrap_or(false);
+            let _ = child.wait();
+            if ok {
+                return Ok(());
+            }
+        }
+    }
+    Err("no clipboard program was found".into())
+}
+
 /// The recent positions of HEAD. It is the way back from a mistake.
 fn reflog(root: &PathBuf) -> Vec<ReflogEntry> {
     let out = Command::new("git")
@@ -585,5 +674,9 @@ fn display_diff(root: &PathBuf, target: &DiffTarget) -> (String, String) {
             (run(&["diff", "--", path]), run(&["diff", "--cached", "--", path]))
         }
         DiffTarget::Commit(id) => (run(&["show", "--stat", "--patch", id]), String::new()),
+        DiffTarget::Stash(i) => (
+            run(&["stash", "show", "--stat", "--patch", &format!("stash@{{{i}}}")]),
+            String::new(),
+        ),
     }
 }
