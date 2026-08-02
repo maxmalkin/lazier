@@ -47,6 +47,21 @@ pub struct BranchEntry {
     pub remote: bool,
 }
 
+pub struct BlameLine {
+    pub id: String,
+    pub author: String,
+    pub date: String,
+    pub text: String,
+}
+
+pub struct SubmoduleEntry {
+    pub path: String,
+    pub id: String,
+    /// A dash means the submodule has no checkout. A plus means it sits at
+    /// another commit than the one the repository records.
+    pub state: char,
+}
+
 pub struct ReflogEntry {
     pub id: String,
     /// The position, such as HEAD@{2}.
@@ -105,6 +120,10 @@ pub enum Req {
     Copy(String),
     /// Read the tags, so the commit rows can show them.
     Tags,
+    /// Read who last changed each line of a file.
+    Blame(String),
+    /// List the submodules of the repository.
+    Submodules,
     /// Run a command line through the shell, in the root of the repository.
     Shell(String),
     /// Add a pattern to the ignore rules. `local` writes to the private
@@ -131,6 +150,8 @@ pub enum DiffTarget {
     Commit(String),
     /// A stash entry, by its position in the list.
     Stash(usize),
+    /// Everything between two commits.
+    Range { from: String, to: String },
 }
 
 pub enum Resp {
@@ -152,6 +173,8 @@ pub enum Resp {
     Reflog(Vec<ReflogEntry>),
     /// A tag name for each commit that carries one.
     Tags(std::collections::HashMap<String, Vec<String>>),
+    Blame { path: String, lines: Vec<BlameLine> },
+    Submodules(Vec<SubmoduleEntry>),
 }
 
 pub struct Git {
@@ -278,6 +301,10 @@ pub fn spawn(event_tx: Sender<Msg>) -> anyhow::Result<Git> {
                 Req::Worktrees => Some(Resp::Worktrees(worktrees(&worker_root))),
                 Req::Reflog => Some(Resp::Reflog(reflog(&worker_root))),
                 Req::Tags => Some(Resp::Tags(tags(&worker_root))),
+                Req::Blame(path) => {
+                    Some(Resp::Blame { lines: blame(&worker_root, &path), path })
+                }
+                Req::Submodules => Some(Resp::Submodules(submodules(&worker_root))),
                 Req::Copy(text) => {
                     let start = std::time::Instant::now();
                     let result = copy_to_clipboard(&text);
@@ -504,6 +531,71 @@ fn tags(root: &PathBuf) -> std::collections::HashMap<String, Vec<String>> {
     map
 }
 
+/// Who last changed each line of a file. The porcelain form is stable,
+/// thus it is safer to read than the plain one.
+fn blame(root: &PathBuf, path: &str) -> Vec<BlameLine> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["blame", "--line-porcelain", "-w", "--", path])
+        .output();
+    let Ok(out) = out else { return Vec::new() };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let mut lines = Vec::new();
+    let (mut id, mut author, mut date) = (String::new(), String::new(), String::new());
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("author ") {
+            author = rest.to_string();
+        } else if let Some(rest) = line.strip_prefix("author-time ") {
+            date = rest.parse::<u32>().map(ymd).unwrap_or_default();
+        } else if let Some(rest) = line.strip_prefix('\t') {
+            // A line that starts with a tab holds the text of the file.
+            lines.push(BlameLine {
+                id: id.chars().take(7).collect(),
+                author: author.clone(),
+                date: date.clone(),
+                text: rest.to_string(),
+            });
+        } else if line.len() >= 40 && line.split(' ').next().is_some_and(|w| w.len() == 40) {
+            id = line.split(' ').next().unwrap_or("").to_string();
+        }
+    }
+    lines
+}
+
+// Convert epoch seconds to a calendar date, with no date library.
+fn ymd(secs: u32) -> String {
+    let z = (secs / 86400) as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// The submodules and their state.
+fn submodules(root: &PathBuf) -> Vec<SubmoduleEntry> {
+    let out = Command::new("git").arg("-C").arg(root).args(["submodule", "status"]).output();
+    let Ok(out) = out else { return Vec::new() };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let state = line.chars().next().filter(|c| !c.is_ascii_alphanumeric()).unwrap_or(' ');
+            let rest = if state == ' ' { line } else { &line[1..] };
+            let mut p = rest.split_whitespace();
+            let id = p.next()?.chars().take(7).collect();
+            Some(SubmoduleEntry { id, path: p.next()?.to_string(), state })
+        })
+        .collect()
+}
+
 /// Put text on the clipboard. Each system has its own program for it.
 fn copy_to_clipboard(text: &str) -> Result<(), String> {
     let candidates: &[(&str, &[&str])] = if cfg!(target_os = "macos") {
@@ -661,6 +753,10 @@ fn display_diff(root: &PathBuf, target: &DiffTarget) -> (String, String) {
             (run(&["diff", "--", path]), run(&["diff", "--cached", "--", path]))
         }
         DiffTarget::Commit(id) => (run(&["show", "--stat", "--patch", id]), String::new()),
+        DiffTarget::Range { from, to } => (
+            run(&["diff", "--stat", "--patch", &format!("{from}..{to}")]),
+            String::new(),
+        ),
         DiffTarget::Stash(i) => (
             run(&["stash", "show", "--stat", "--patch", &format!("stash@{{{i}}}")]),
             String::new(),

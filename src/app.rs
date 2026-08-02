@@ -16,8 +16,8 @@ use std::collections::HashSet;
 use crate::event::{self, Msg};
 use crate::git::rebase::{self, RebaseInfo, TodoAction, TodoItem};
 use crate::git::{
-    self, BranchEntry, CommitEntry, DiffTarget, FileEntry, Git, ReflogEntry, Req, Resp,
-    WorktreeEntry, patch,
+    self, BlameLine, BranchEntry, CommitEntry, DiffTarget, FileEntry, Git, ReflogEntry, Req, Resp,
+    SubmoduleEntry, WorktreeEntry, patch,
 };
 use crate::keys::{Action, action_for};
 use crate::tree::{self, TreeRow};
@@ -48,6 +48,8 @@ pub struct RepoState {
     pub tags: std::collections::HashMap<String, Vec<String>>,
     /// The text that the commit list was searched for, if any.
     pub filter: Option<String>,
+    /// The commit that the selected one is compared against.
+    pub compare: Option<String>,
 }
 
 pub enum InputPurpose {
@@ -123,6 +125,10 @@ pub enum Mode {
     /// A command failed. The window makes sure the user sees it, because
     /// the command log can be closed.
     Error { cmd: String, output: Vec<String> },
+    /// Who last changed each line of a file.
+    Blame { path: String, lines: Vec<BlameLine>, cursor: usize },
+    /// The submodules and their state.
+    Submodules { list: Vec<SubmoduleEntry>, cursor: usize },
     /// The commit message window. It has a summary line and a body.
     CommitMsg { summary: String, body: String, on_body: bool, purpose: CommitPurpose },
     /// The todo list editor of an interactive rebase. `base` is the commit
@@ -426,6 +432,36 @@ impl App {
                     _ => self.mode = Mode::Normal,
                 }
             }
+            Mode::Blame { lines, cursor, .. } => match key.code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('b') => self.mode = Mode::Normal,
+                KeyCode::Char('j') | KeyCode::Down => {
+                    *cursor = (*cursor + 1).min(lines.len().saturating_sub(1))
+                }
+                KeyCode::Char('k') | KeyCode::Up => *cursor = cursor.saturating_sub(1),
+                KeyCode::Char('d') => *cursor = (*cursor + 20).min(lines.len().saturating_sub(1)),
+                KeyCode::Char('u') => *cursor = cursor.saturating_sub(20),
+                KeyCode::Char('g') => *cursor = 0,
+                KeyCode::Char('G') => *cursor = lines.len().saturating_sub(1),
+                _ => {}
+            },
+            Mode::Submodules { list, cursor } => match key.code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('M') => self.mode = Mode::Normal,
+                KeyCode::Char('j') | KeyCode::Down => {
+                    *cursor = (*cursor + 1).min(list.len().saturating_sub(1))
+                }
+                KeyCode::Char('k') | KeyCode::Up => *cursor = cursor.saturating_sub(1),
+                KeyCode::Enter => {
+                    let Some(s) = list.get(*cursor) else { return };
+                    let path = s.path.clone();
+                    self.mode = Mode::Normal;
+                    self.write(svec(&["submodule", "update", "--init", "--", &path]));
+                }
+                KeyCode::Char('u') => {
+                    self.mode = Mode::Normal;
+                    self.write(svec(&["submodule", "update", "--init", "--recursive"]));
+                }
+                _ => {}
+            },
             Mode::Reflog { list, cursor } => match key.code {
                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('U') => self.mode = Mode::Normal,
                 KeyCode::Char('j') | KeyCode::Down => {
@@ -1190,6 +1226,34 @@ impl App {
                     };
                 }
             }
+            Action::BlameFile => {
+                let Some(f) = self.selected_file() else { return };
+                if f.work == '?' {
+                    self.message = "git does not track this file yet".into();
+                    self.message_ok = false;
+                    return;
+                }
+                let path = f.path.clone();
+                if let Some(git) = &self.git {
+                    git.send(Req::Blame(path));
+                }
+            }
+            Action::SubmoduleList => {
+                if let Some(git) = &self.git {
+                    git.send(Req::Submodules);
+                }
+            }
+            // Mark a commit, then move to another one to see what lies
+            // between them. The same key on the marked commit clears it.
+            Action::MarkForCompare => {
+                let Some(c) = self.repo.commits.get(self.selected[3]) else { return };
+                let id = c.id_str().to_string();
+                self.repo.compare = match &self.repo.compare {
+                    Some(old) if *old == id => None,
+                    _ => Some(id),
+                };
+                self.diff_target = None;
+            }
             Action::CopyId => {
                 if let Some(c) = self.repo.commits.get(self.selected[3])
                     && let Some(git) = &self.git
@@ -1507,6 +1571,22 @@ impl App {
             Resp::Worktrees(list) => self.mode = Mode::Worktrees { list, cursor: 0 },
             Resp::Reflog(list) => self.mode = Mode::Reflog { list, cursor: 0 },
             Resp::Tags(map) => self.repo.tags = map,
+            Resp::Blame { path, lines } => {
+                if lines.is_empty() {
+                    self.message = "no blame for that file".into();
+                    self.message_ok = false;
+                } else {
+                    self.mode = Mode::Blame { path, lines, cursor: 0 };
+                }
+            }
+            Resp::Submodules(list) => {
+                if list.is_empty() {
+                    self.message = "this repository has no submodules".into();
+                    self.message_ok = true;
+                } else {
+                    self.mode = Mode::Submodules { list, cursor: 0 };
+                }
+            }
         }
     }
 
@@ -1554,7 +1634,13 @@ impl App {
                 path: f.path.clone(),
                 untracked: f.work == '?',
             }),
-            3 => self.repo.commits.get(self.selected[3]).map(|c| DiffTarget::Commit(c.id_str().to_string())),
+            // With a commit marked, the pane shows what lies between them.
+            3 => self.repo.commits.get(self.selected[3]).map(|c| match &self.repo.compare {
+                Some(from) if *from != c.id_str() => {
+                    DiffTarget::Range { from: from.clone(), to: c.id_str().to_string() }
+                }
+                _ => DiffTarget::Commit(c.id_str().to_string()),
+            }),
             // A stash shows its own changes, thus you can look before you
             // put them back.
             4 => (self.selected[4] < self.repo.stashes.len()).then(|| DiffTarget::Stash(self.selected[4])),

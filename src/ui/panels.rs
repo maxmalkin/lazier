@@ -267,8 +267,9 @@ pub fn render_left(frame: &mut Frame, areas: [Rect; 5], app: &App) {
     // Each title carries the key that focuses the panel. A search shows in
     // the title of the commits panel, thus the list is never a surprise.
     for (i, area) in areas.into_iter().enumerate() {
-        let title = match (i, &repo.filter) {
-            (3, Some(text)) => format!("[4]─Commits─search: {text}"),
+        let title = match (i, &repo.filter, &repo.compare) {
+            (3, Some(text), _) => format!("[4]─Commits─search: {text}"),
+            (3, _, Some(id)) => format!("[4]─Commits─from {id}"),
             _ => format!("[{}]─{}", i + 1, PANELS[i]),
         };
         list::render(frame, area, &title, app.focus == i, app.selected[i], app.panel_len(i), rows[i]);
@@ -486,6 +487,56 @@ pub fn render_worktrees(
             ),
             Span::styled(shorten(&path, room), Style::new().fg(Color::Gray)),
             Span::styled(tag, Style::new().fg(if w.prunable { Color::Red } else { Color::DarkGray })),
+        ])
+    });
+}
+
+/// Who last changed each line of a file. The commit of the line under the
+/// cursor keeps its color, thus a block of one commit is easy to see.
+pub fn render_blame(
+    frame: &mut Frame,
+    area: Rect,
+    path: &str,
+    lines: &[crate::git::BlameLine],
+    cursor: usize,
+) {
+    frame.render_widget(Clear, area);
+    let here = lines.get(cursor).map(|l| l.id.clone()).unwrap_or_default();
+    let title = format!(" Blame — {path} ");
+    list::render(frame, area, &title, true, cursor, lines.len(), &|i| {
+        let l = &lines[i];
+        // The lines of the same commit share a brighter color.
+        let same = l.id == here;
+        let meta = if same { Color::LightYellow } else { Color::DarkGray };
+        Line::from(vec![
+            Span::styled(format!("{} ", l.id), Style::new().fg(meta)),
+            Span::styled(format!("{} ", l.date), Style::new().fg(meta)),
+            Span::styled(format!("{:<12.12} ", l.author), Style::new().fg(author_color(&l.author))),
+            Span::styled(l.text.clone(), Style::new().fg(Color::Gray)),
+        ])
+    });
+}
+
+/// The submodules and their state.
+pub fn render_submodules(
+    frame: &mut Frame,
+    area: Rect,
+    list: &[crate::git::SubmoduleEntry],
+    cursor: usize,
+) {
+    frame.render_widget(Clear, area);
+    list::render(frame, area, " Submodules ", true, cursor, list.len(), &|i| {
+        let s = &list[i];
+        let (tag, color) = match s.state {
+            '-' => (" not there", Color::Red),
+            '+' => (" other commit", Color::Yellow),
+            'U' => (" conflict", Color::LightRed),
+            _ => ("", Color::Green),
+        };
+        Line::from(vec![
+            Span::styled(format!("{} ", s.id), Style::new().fg(Color::DarkGray)),
+            Span::styled(s.path.clone(), Style::new().fg(Color::Cyan)),
+            Span::styled(tag.to_string(), Style::new().fg(color)),
         ])
     });
 }

@@ -79,6 +79,14 @@ pub fn render(frame: &mut Frame, app: &App) {
             let h = (list.len() as u16 + 2).min(body.height).max(4);
             panels::render_reflog(frame, centered(body, 80, h), list, *cursor);
         }
+        // Blame needs the room, thus it takes the whole body.
+        Mode::Blame { path, lines, cursor } => {
+            panels::render_blame(frame, body, path, lines, *cursor)
+        }
+        Mode::Submodules { list, cursor } => {
+            let h = (list.len() as u16 + 2).min(body.height).max(4);
+            panels::render_submodules(frame, centered(body, 76, h), list, *cursor);
+        }
         Mode::CommitMsg { summary, body: text, on_body, purpose } => {
             render_commit(frame, body, summary, text, *on_body, purpose)
         }
@@ -518,6 +526,17 @@ fn render_bar(frame: &mut Frame, area: Rect, app: &App) {
             ("h", "Throw away"),
             ("<esc>", "Cancel"),
         ]]),
+        Mode::Blame { .. } => hint_line(&[&[
+            ("j/k", "Move"),
+            ("d/u", "Page"),
+            ("g/G", "Top/end"),
+            ("<esc>", "Close"),
+        ]]),
+        Mode::Submodules { .. } => hint_line(&[&[
+            ("<enter>", "Update this one"),
+            ("u", "Update all"),
+            ("<esc>", "Close"),
+        ]]),
         Mode::Reflog { .. } => hint_line(&[&[
             ("<enter>", "Move HEAD there"),
             ("j/k", "Move"),
@@ -601,6 +620,7 @@ const HELP: &[(&str, Hints)] = &[
             ("i", "ignore it: i shares the rule, e keeps it to yourself"),
             ("A", "add the staged changes to the last commit"),
             ("e", "open the file in your editor"),
+            ("b", "see who last changed each line"),
             ("c / C", "open the commit window, or use the editor"),
             ("s", "put the changes in a stash"),
             ("o / t", "take ours or theirs in a conflict"),
@@ -618,6 +638,10 @@ const HELP: &[(&str, Hints)] = &[
             ("F", "force push, with a lease that protects other people"),
             ("* ↑ ↓", "current branch, to push, to pull"),
         ],
+    ),
+    (
+        "Submodules",
+        &[("M", "open the list"), ("enter / u", "update this one, or every one")],
     ),
     (
         "Go back",
@@ -657,6 +681,7 @@ const HELP: &[(&str, Hints)] = &[
             ("t / T", "make a tag here, or push every tag"),
             ("c", "copy the id to the clipboard"),
             ("/ esc", "search the messages, or show them all again"),
+            ("space", "mark a commit, then move to see what lies between"),
             ("↑", "this commit is not on the upstream branch"),
             ("◆", "a commit that carries a tag"),
         ],
