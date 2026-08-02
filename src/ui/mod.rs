@@ -617,7 +617,6 @@ const HELP: &[(&str, Hints)] = &[
             ("P / p / f", "push, pull, or fetch"),
             ("F", "force push, with a lease that protects other people"),
             ("* ↑ ↓", "current branch, to push, to pull"),
-            ("grey name", "a branch on a remote: enter follows it"),
         ],
     ),
     (
@@ -659,6 +658,7 @@ const HELP: &[(&str, Hints)] = &[
             ("c", "copy the id to the clipboard"),
             ("/ esc", "search the messages, or show them all again"),
             ("↑", "this commit is not on the upstream branch"),
+            ("◆", "a commit that carries a tag"),
         ],
     ),
     (

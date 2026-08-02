@@ -26,12 +26,21 @@ fn mark_color(mark: char) -> Color {
 const LANE_COLORS: [Color; 6] =
     [Color::Cyan, Color::Magenta, Color::Green, Color::Yellow, Color::Blue, Color::Red];
 
-fn graph_spans(graph: &str) -> Vec<Span<'static>> {
+/// The glyphs of one graph row. A tagged commit gets a diamond, thus a
+/// release stands out from the commits around it.
+fn graph_spans(graph: &str, tagged: bool) -> Vec<Span<'static>> {
     graph
         .chars()
         .enumerate()
         .map(|(i, ch)| {
-            Span::styled(ch.to_string(), Style::new().fg(LANE_COLORS[(i / 2) % LANE_COLORS.len()]))
+            let lane = Style::new().fg(LANE_COLORS[(i / 2) % LANE_COLORS.len()]);
+            match ch {
+                '●' | '◉' if tagged => Span::styled(
+                    "◆".to_string(),
+                    Style::new().fg(Color::LightYellow).add_modifier(Modifier::BOLD),
+                ),
+                _ => Span::styled(ch.to_string(), lane),
+            }
         })
         .collect()
 }
@@ -72,7 +81,7 @@ fn commit_line(c: &CommitEntry, zoomed: bool, unpushed: bool, tags: &[String]) -
     if zoomed {
         spans.push(Span::styled(format!("{} ", ymd(c.time)), Style::new().fg(Color::DarkGray)));
     }
-    spans.extend(graph_spans(&c.graph));
+    spans.extend(graph_spans(&c.graph, !tags.is_empty()));
     // An up arrow marks a commit that the upstream branch does not have.
     if unpushed {
         spans.push(Span::styled("↑", Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)));

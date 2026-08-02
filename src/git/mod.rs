@@ -446,7 +446,6 @@ fn branches(root: &PathBuf) -> Vec<BranchEntry> {
             "--sort=-committerdate",
             "--format=%(refname:short)\t%(HEAD)\t%(upstream:track)\t%(committerdate:relative)\t%(refname)",
             "refs/heads/",
-            "refs/remotes/",
         ])
         .output();
     let Ok(out) = out else { return Vec::new() };
@@ -465,22 +464,10 @@ fn branches(root: &PathBuf) -> Vec<BranchEntry> {
                 behind: track_count(track, "behind "),
                 gone: track.contains("gone"),
                 age: short_age(parts.next().unwrap_or("")),
-                remote: {
-                    let full = parts.next().unwrap_or("");
-                    // The pointer a remote keeps to its own head shortens
-                    // to just the remote name, thus the full ref is the
-                    // only way to know it.
-                    if full.ends_with("/HEAD") {
-                        return None;
-                    }
-                    full.starts_with("refs/remotes/")
-                },
+                remote: parts.next().unwrap_or("").starts_with("refs/remotes/"),
             })
         })
         .collect();
-    // A remote branch that a local branch already follows is noise.
-    let local: Vec<String> = list.iter().filter(|b| !b.remote).map(|b| b.name.clone()).collect();
-    list.retain(|b| !b.remote || !local.iter().any(|l| b.name.ends_with(&format!("/{l}"))));
     // The branch you are on goes first. The others keep the recency order.
     if let Some(i) = list.iter().position(|b| b.current) {
         let current = list.remove(i);
