@@ -81,6 +81,11 @@ bottom shows the keys for the panel in focus.
 | `W` | Worktrees |
 | `@` | Command log: each command, its result, and its time |
 
+A command that fails opens a window with the command and what git said, and
+the command log keeps the record. When there is a way out, the window offers
+it instead: a push with no upstream offers to make one, and a checkout of a
+branch that another worktree holds offers to go there.
+
 Move with `j` and `k`, `ctrl-d` and `ctrl-u`, `g` and `G`. `tab` goes to the
 next panel. `r` reads the repository again.
 

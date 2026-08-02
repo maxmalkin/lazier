@@ -110,6 +110,9 @@ pub enum Mode {
     Reset { target: String, subject: String },
     /// The list of recent positions of HEAD.
     Reflog { list: Vec<ReflogEntry>, cursor: usize },
+    /// A command failed. The window makes sure the user sees it, because
+    /// the command log can be closed.
+    Error { cmd: String, output: Vec<String> },
     /// The commit message window. It has a summary line and a body.
     CommitMsg { summary: String, body: String, on_body: bool, purpose: CommitPurpose },
     /// The todo list editor of an interactive rebase. `base` is the commit
@@ -297,7 +300,7 @@ impl App {
                     self.apply(action);
                 }
             }
-            Mode::Help => self.mode = Mode::Normal,
+            Mode::Help | Mode::Error { .. } => self.mode = Mode::Normal,
             Mode::Worktrees { list, cursor } => match key.code {
                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('W') => self.mode = Mode::Normal,
                 KeyCode::Char('j') | KeyCode::Down => {
@@ -1326,6 +1329,13 @@ impl App {
                 // A worktree command changes the list, thus open it again
                 // with the new content.
                 let was_worktree = cmd.contains("worktree");
+                // Show a failure that has no other answer. A window that
+                // offers a fix is better, thus it comes first. A window the
+                // user opened must not go away under their hands, thus the
+                // log alone carries the failure then.
+                if !ok && matches!(self.mode, Mode::Normal) {
+                    self.mode = Mode::Error { cmd: cmd.clone(), output: output.clone() };
+                }
                 self.log_cmd(ok, cmd, ms, output);
                 if ok {
                     self.refresh_all();
@@ -1961,8 +1971,10 @@ mod tests {
         insta::assert_snapshot!(draw(&app, 100, 30).backend());
     }
 
+    // A failure the user cannot answer opens a window, because the command
+    // log can be closed and a silent failure is the worst kind.
     #[test]
-    fn other_errors_open_no_window() {
+    fn a_failure_opens_a_window() {
         let mut app = demo();
         app.apply_resp(Resp::WriteDone {
             ok: false,
@@ -1970,7 +1982,56 @@ mod tests {
             output: vec!["error: pathspec 'nope' did not match".into()],
             ms: 5,
         });
-        assert!(matches!(app.mode, Mode::Normal));
+        match &app.mode {
+            Mode::Error { cmd, output } => {
+                assert_eq!(cmd, "git checkout nope");
+                assert_eq!(output.len(), 1);
+            }
+            _ => panic!("expected the failure window"),
+        }
+        // The log keeps the record as well.
+        assert_eq!(app.cmd_log.len(), 1);
+        assert!(!app.cmd_log[0].ok);
+    }
+
+    // A window that offers a way out is better than one that only reports.
+    #[test]
+    fn an_offer_wins_over_the_failure_window() {
+        let mut app = demo();
+        app.apply_resp(Resp::WriteDone {
+            ok: false,
+            cmd: "git push".into(),
+            output: vec!["fatal: The current branch main has no upstream branch".into()],
+            ms: 5,
+        });
+        assert!(
+            matches!(&app.mode, Mode::Confirm { .. }),
+            "the upstream offer must come first"
+        );
+    }
+
+    // A failure of a command that runs in the background must not take a
+    // window away from the user while they type.
+    #[test]
+    fn a_failure_never_closes_an_open_window() {
+        let mut app = demo();
+        app.mode = Mode::CommitMsg {
+            summary: "feat: half typed".into(),
+            body: String::new(),
+            on_body: false,
+            purpose: CommitPurpose::New,
+        };
+        app.apply_resp(Resp::WriteDone {
+            ok: false,
+            cmd: "git fetch".into(),
+            output: vec!["fatal: could not read from remote".into()],
+            ms: 5,
+        });
+        match &app.mode {
+            Mode::CommitMsg { summary, .. } => assert_eq!(summary, "feat: half typed"),
+            _ => panic!("the commit window must stay"),
+        }
+        assert!(!app.cmd_log[0].ok, "the log still holds the failure");
     }
 
     // A checkout of the branch you are on reads every file for nothing.

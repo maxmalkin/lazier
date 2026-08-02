@@ -74,6 +74,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         }
         Mode::Ignore { pattern, tracked } => render_ignore(frame, body, pattern, *tracked),
         Mode::Reset { target, subject } => render_reset(frame, body, target, subject),
+        Mode::Error { cmd, output } => render_error(frame, body, cmd, output),
         Mode::Reflog { list, cursor } => {
             let h = (list.len() as u16 + 2).min(body.height).max(4);
             panels::render_reflog(frame, centered(body, 80, h), list, *cursor);
@@ -95,6 +96,34 @@ fn centered(area: Rect, w: u16, h: u16) -> Rect {
         width: w,
         height: h,
     }
+}
+
+/// The window that shows a command that failed. The command log can be
+/// closed, thus a failure needs a window of its own.
+fn render_error(frame: &mut Frame, body: Rect, cmd: &str, output: &[String]) {
+    let w = 72.min(body.width);
+    let inner = w.saturating_sub(4).max(1) as usize;
+    // A long line wraps, thus count the rows it will use.
+    let rows: usize = output.iter().map(|l| l.chars().count().div_ceil(inner).max(1)).sum();
+    let h = (rows as u16 + 5).min(body.height);
+    let area = centered(body, w, h);
+    frame.render_widget(Clear, area);
+    let block = Block::bordered()
+        .title(Span::styled(" Failed ", Style::new().fg(Color::Red).add_modifier(Modifier::BOLD)))
+        .border_style(Style::new().fg(Color::Red));
+    let text = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines = vec![Line::styled(cmd.to_string(), Style::new().fg(Color::White)), Line::default()];
+    for l in output {
+        lines.push(Line::styled(l.clone(), Style::new().fg(Color::Red)));
+    }
+    lines.push(Line::default());
+    lines.push(Line::styled("press any key to close", DIM));
+    frame.render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: false }),
+        Rect { x: text.x + 1, width: text.width.saturating_sub(2), ..text },
+    );
 }
 
 /// The window that moves HEAD. Each choice says what happens to the work
@@ -474,6 +503,8 @@ fn render_bar(frame: &mut Frame, area: Rect, app: &App) {
         ]]),
         // The window draws its own keys.
         Mode::NewWorktree { .. } => Line::default(),
+        // The window draws its own note.
+        Mode::Error { .. } => Line::default(),
         Mode::Reset { .. } => hint_line(&[&[
             ("s", "Keep in the index"),
             ("m", "Keep in the work tree"),
