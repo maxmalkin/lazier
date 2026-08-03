@@ -314,7 +314,7 @@ pub fn spawn(event_tx: Sender<Msg>) -> anyhow::Result<Git> {
                 Req::Sync => Some(sync_state(&worker_root)),
                 Req::Worktrees => Some(Resp::Worktrees(worktrees(&worker_root))),
                 Req::Reflog => Some(Resp::Reflog(reflog(&worker_root))),
-                Req::Tags => Some(Resp::Tags(tags(&worker_root))),
+                Req::Tags => read::tags(&repo),
                 Req::Blame(path) => {
                     Some(Resp::Blame { lines: blame(&worker_root, &path), path })
                 }
@@ -597,33 +597,6 @@ fn branches(root: &PathBuf) -> Vec<BranchEntry> {
     list
 }
 
-/// The tags of each commit, by the short id of the commit. A tag can point
-/// at a tag object, thus the id is the one after the peel.
-fn tags(root: &PathBuf) -> std::collections::HashMap<String, Vec<String>> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args([
-            "for-each-ref",
-            "--format=%(refname:short)%09%(objectname:short=7)%09%(*objectname:short=7)",
-            "refs/tags/",
-        ])
-        .output();
-    let Ok(out) = out else { return Default::default() };
-    let mut map: std::collections::HashMap<String, Vec<String>> = Default::default();
-    for line in String::from_utf8_lossy(&out.stdout).lines() {
-        let mut p = line.split('\t');
-        let Some(name) = p.next() else { continue };
-        let direct = p.next().unwrap_or("");
-        let peeled = p.next().unwrap_or("");
-        // An annotated tag gives the commit in the second column.
-        let id = if peeled.is_empty() { direct } else { peeled };
-        if !id.is_empty() {
-            map.entry(id.to_string()).or_default().push(name.to_string());
-        }
-    }
-    map
-}
 
 /// Who last changed each line of a file. The porcelain form is stable,
 /// thus it is safer to read than the plain one.

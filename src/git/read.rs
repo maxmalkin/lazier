@@ -89,6 +89,25 @@ pub fn head_name(repo: &gix::Repository) -> Option<String> {
     repo.head_name().ok().flatten().map(|n| n.shorten().to_string())
 }
 
+/// The tags of each commit, by the short id of the commit.
+///
+/// A separate `git for-each-ref` would open its own object database to
+/// peel the tags, which costs a lot of memory on a big repository. The
+/// database here is open already.
+pub fn tags(repo: &gix::Repository) -> Option<Resp> {
+    let mut map: std::collections::HashMap<String, Vec<String>> = Default::default();
+    let platform = repo.references().ok()?;
+    for r in platform.tags().ok()?.filter_map(Result::ok) {
+        let name = r.name().shorten().to_string();
+        // An annotated tag points at a tag object. Follow it to the commit.
+        let mut r = r;
+        if let Ok(id) = r.peel_to_id() {
+            map.entry(id.to_hex_with_len(7).to_string()).or_default().push(name);
+        }
+    }
+    Some(Resp::Tags(map))
+}
+
 pub fn stashes(repo: &gix::Repository) -> Option<Resp> {
     let mut out = Vec::new();
     if let Ok(r) = repo.find_reference("refs/stash")
