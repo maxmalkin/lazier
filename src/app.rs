@@ -1795,9 +1795,13 @@ impl App {
                 if !ok && matches!(self.mode, Mode::Normal) {
                     self.mode = Mode::Error { cmd: cmd.clone(), output: output.clone() };
                 }
+                // A command that cannot change a file needs no scan of the
+                // work tree. That scan is the costly part on a repository
+                // with many files.
+                let files = touches_files(&cmd);
                 self.log_cmd(ok, cmd, ms, output);
                 if ok {
-                    self.refresh_all();
+                    self.refresh(files);
                     if was_worktree
                         && let Some(git) = &self.git
                     {
@@ -1861,8 +1865,17 @@ impl App {
     }
 
     fn refresh_all(&mut self) {
+        self.refresh(true);
+    }
+
+    /// Read the repository again. `files` says whether to scan the work
+    /// tree, which is the costly part on a repository with many files.
+    fn refresh(&mut self, files: bool) {
         let Some(git) = &self.git else { return };
-        for req in [Req::Status, Req::Branches, Req::Stashes, Req::Sync, Req::Tags] {
+        if files {
+            git.send(Req::Status);
+        }
+        for req in [Req::Branches, Req::Stashes, Req::Sync, Req::Tags] {
             git.send(req);
         }
         // The log thread walks again only when HEAD moved. A stage or a
@@ -1924,6 +1937,18 @@ fn contains(r: ratatui::layout::Rect, x: u16, y: u16) -> bool {
 
 fn svec(args: &[&str]) -> Vec<String> {
     args.iter().map(|s| s.to_string()).collect()
+}
+
+/// True when a command can change a file in the work tree or the index.
+/// Only a command that certainly cannot is left out, thus a wrong guess
+/// never hides a change from you.
+fn touches_files(cmd: &str) -> bool {
+    // The text looks like "git tag -a v1 -m v1 abc1234".
+    let Some(verb) = cmd.strip_prefix("git ").and_then(|r| r.split_whitespace().next()) else {
+        // A shell command or a copy can do anything.
+        return true;
+    };
+    !matches!(verb, "tag" | "push" | "fetch" | "branch" | "remote" | "config" | "reflog")
 }
 
 /// Find the worktree path in a git error. Git says:
@@ -2637,6 +2662,28 @@ mod tests {
         assert!(app.running.is_empty());
         assert!(app.message.contains("you are already on"), "{}", app.message);
         assert!(app.message_ok, "this is not an error");
+    }
+
+    // A command that cannot change a file must not start a scan of the
+    // work tree, and every other command must.
+    #[test]
+    fn only_the_right_commands_scan_the_work_tree() {
+        for cmd in ["git tag -a v1 -m v1", "git push", "git fetch", "git branch -d old"] {
+            assert!(!touches_files(cmd), "{cmd} should not scan");
+        }
+        for cmd in [
+            "git add -A",
+            "git checkout main",
+            "git reset --hard HEAD",
+            "git stash push",
+            "git commit -m x",
+            "git rebase --continue",
+            "git clean -fd",
+            ": rm -rf build",
+            "absorb",
+        ] {
+            assert!(touches_files(cmd), "{cmd} should scan");
+        }
     }
 
     #[test]
