@@ -16,6 +16,9 @@ pub enum Msg {
     Resize,
     Git(Resp),
     Refresh,
+    /// The work tree changed. Some means only these paths changed. None
+    /// means the change is not known, thus every file needs a look.
+    Dirty(Option<Vec<String>>),
 }
 
 /// Start the input thread. When `pause` is set, the thread does not read

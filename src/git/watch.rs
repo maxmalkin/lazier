@@ -40,3 +40,90 @@ pub fn spawn(git_dir: PathBuf, tx: Sender<Msg>) {
         }
     });
 }
+
+/// The most paths to carry in one message. Past this it is cheaper to look
+/// at the whole work tree than to name every path.
+const MAX_PATHS: usize = 300;
+
+/// Watch the work tree and name the files that changed. The status scan can
+/// then look at those files only, which is far less work than a walk of a
+/// large work tree.
+///
+/// The watch may fail, and events may be lost when many files change at
+/// once. Both cases send `None`, which asks for a full scan.
+pub fn spawn_worktree(root: PathBuf, tx: Sender<Msg>) {
+    std::thread::spawn(move || {
+        let (wtx, wrx) = std::sync::mpsc::channel::<Option<PathBuf>>();
+        let Ok(mut watcher) = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+            match res {
+                Ok(ev) => {
+                    // The watcher lost events, thus what changed is unknown.
+                    if matches!(ev.kind, notify::EventKind::Other) {
+                        let _ = wtx.send(None);
+                        return;
+                    }
+                    for p in ev.paths {
+                        let _ = wtx.send(Some(p));
+                    }
+                }
+                // An error leaves the truth unknown, thus ask for a full scan.
+                Err(_) => {
+                    let _ = wtx.send(None);
+                }
+            }
+        }) else {
+            return;
+        };
+        // A work tree that cannot be watched keeps the old behaviour: every
+        // refresh looks at every file.
+        if watcher.watch(&root, RecursiveMode::Recursive).is_err() {
+            return;
+        }
+        while let Ok(first) = wrx.recv() {
+            let mut paths = Vec::new();
+            let mut unknown = first.is_none();
+            if let Some(p) = first {
+                paths.push(p);
+            }
+            // Collect the burst that follows one save in an editor.
+            while let Ok(next) = wrx.recv_timeout(Duration::from_millis(150)) {
+                match next {
+                    Some(p) => paths.push(p),
+                    None => unknown = true,
+                }
+            }
+            let names = (!unknown)
+                .then(|| relative_names(&root, paths))
+                .flatten();
+            if tx.send(Msg::Dirty(names)).is_err() {
+                return;
+            }
+        }
+    });
+}
+
+/// Turn the paths into names under the root. None means the set is not
+/// usable, thus the caller must look at every file.
+fn relative_names(root: &Path, paths: Vec<PathBuf>) -> Option<Vec<String>> {
+    let real_root = root.canonicalize().ok();
+    let mut out: Vec<String> = Vec::new();
+    for p in paths {
+        // Work inside .git is not work-tree content.
+        if p.components().any(|c| c.as_os_str() == ".git") {
+            continue;
+        }
+        let rel = p
+            .strip_prefix(root)
+            .ok()
+            .or_else(|| real_root.as_deref().and_then(|r| p.strip_prefix(r).ok()))?;
+        let name = rel.to_str()?;
+        if name.is_empty() {
+            continue;
+        }
+        out.push(name.to_string());
+        if out.len() > MAX_PATHS {
+            return None;
+        }
+    }
+    (!out.is_empty()).then_some(out)
+}

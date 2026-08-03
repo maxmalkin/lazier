@@ -99,6 +99,9 @@ pub enum LogReq {
 
 pub enum Req {
     Status,
+    /// Look at these paths only. The answer replaces what is known about
+    /// them and leaves every other path as it is.
+    StatusPaths(Vec<String>),
     Branches,
     Stashes,
     LogChunk { count: usize },
@@ -160,6 +163,9 @@ pub enum DiffTarget {
 
 pub enum Resp {
     Status(Vec<FileEntry>),
+    /// The state of the paths that were looked at. A path that was looked
+    /// at and is not in `files` has no change any more.
+    StatusPaths { scanned: Vec<String>, files: Vec<FileEntry> },
     Branches { current: Option<String>, entries: Vec<BranchEntry> },
     Stashes(Vec<String>),
     LogChunk { entries: Vec<CommitEntry>, done: bool },
@@ -284,6 +290,9 @@ pub fn spawn(event_tx: Sender<Msg>) -> anyhow::Result<Git> {
                     }
                     None
                 }
+                // A scan of a few paths is quick, thus it runs here rather
+                // than on a thread of its own.
+                Req::StatusPaths(paths) => read::status_paths(&repo, &paths),
                 Req::Branches => Some(Resp::Branches {
                     current: read::head_name(&repo),
                     entries: branches(&worker_root),

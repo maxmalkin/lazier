@@ -190,6 +190,9 @@ pub struct App {
     pending_split: bool,
     /// True while one commit is open and waiting to become several.
     pub splitting: bool,
+    /// True once a full scan of the work tree has finished. Until then a
+    /// scan of a few paths would have nothing to build on.
+    have_baseline: bool,
     pause: Arc<AtomicBool>,
     /// A copy of the message sender. A move to another worktree needs it to
     /// start new workers.
@@ -228,6 +231,7 @@ impl App {
             pending_commit_window: false,
             pending_split: false,
             splitting: false,
+            have_baseline: false,
             pause: Arc::new(AtomicBool::new(false)),
             tx: None,
         }
@@ -238,6 +242,7 @@ impl App {
         event::spawn_input(tx.clone(), self.pause.clone());
         let git = git::spawn(tx.clone())?;
         git::watch::spawn(git.git_dir.clone(), tx.clone());
+        git::watch::spawn_worktree(git.root.clone(), tx.clone());
         self.git = Some(git);
         self.tx = Some(tx);
         self.refresh_all();
@@ -370,6 +375,17 @@ impl App {
             Msg::Mouse(m) => self.handle_mouse(m),
             Msg::Git(resp) => self.apply_resp(resp),
             Msg::Refresh => self.refresh_all(),
+            // The work tree changed. Look at the named paths only, if the
+            // rest of what we know is still good.
+            Msg::Dirty(paths) => match paths {
+                Some(paths) if self.have_baseline => {
+                    if let Some(git) = &self.git {
+                        git.send(Req::StatusPaths(paths));
+                    }
+                }
+                // The change is not known, thus look at every file.
+                _ => self.refresh(true),
+            },
             // A resize needs no work. The next draw uses the new size.
             _ => {}
         }
@@ -1702,6 +1718,15 @@ impl App {
         match resp {
             Resp::Status(files) => {
                 self.repo.files = files;
+                self.have_baseline = true;
+                self.rebuild_tree();
+            }
+            // Only the paths that were looked at may change. A path that
+            // was looked at and came back with nothing is clean now.
+            Resp::StatusPaths { scanned, files } => {
+                self.repo.files.retain(|f| !scanned.iter().any(|s| under(&f.path, s)));
+                self.repo.files.extend(files);
+                self.repo.files.sort_by(|a, b| a.path.cmp(&b.path));
                 self.rebuild_tree();
             }
             Resp::Branches { current, entries } => {
@@ -1937,6 +1962,11 @@ fn contains(r: ratatui::layout::Rect, x: u16, y: u16) -> bool {
 
 fn svec(args: &[&str]) -> Vec<String> {
     args.iter().map(|s| s.to_string()).collect()
+}
+
+/// True when `path` is the named path or sits under it as a directory.
+fn under(path: &str, name: &str) -> bool {
+    path == name || path.strip_prefix(name).is_some_and(|r| r.starts_with('/'))
 }
 
 /// True when a command can change a file in the work tree or the index.
@@ -2684,6 +2714,68 @@ mod tests {
         ] {
             assert!(touches_files(cmd), "{cmd} should scan");
         }
+    }
+
+    // A scan of a few paths must change what is known about those paths
+    // only, and must leave every other path as it was.
+    #[test]
+    fn a_partial_scan_touches_only_what_it_looked_at() {
+        let mut app = demo();
+        app.have_baseline = true;
+        let mut before: Vec<String> = app.repo.files.iter().map(|f| f.path.clone()).collect();
+        before.sort();
+        assert!(before.contains(&"notes.txt".to_string()));
+        // Look at one file and find it changed in another way.
+        app.apply_resp(Resp::StatusPaths {
+            scanned: vec!["src/main.rs".into()],
+            files: vec![FileEntry { index: ' ', work: 'M', path: "src/main.rs".into() }],
+        });
+        let mut after: Vec<String> = app.repo.files.iter().map(|f| f.path.clone()).collect();
+        after.sort();
+        assert_eq!(before, after, "the set of files is the same");
+        let m = app.repo.files.iter().find(|f| f.path == "src/main.rs").unwrap();
+        assert_eq!((m.index, m.work), (' ', 'M'), "that one file changed");
+    }
+
+    // A path that was looked at and came back with nothing is clean now.
+    #[test]
+    fn a_partial_scan_removes_a_file_that_is_clean_again() {
+        let mut app = demo();
+        app.have_baseline = true;
+        app.apply_resp(Resp::StatusPaths { scanned: vec!["notes.txt".into()], files: Vec::new() });
+        assert!(!app.repo.files.iter().any(|f| f.path == "notes.txt"));
+        assert!(app.repo.files.iter().any(|f| f.path == "src/main.rs"), "the rest stays");
+    }
+
+    // A directory name covers the files under it.
+    #[test]
+    fn a_partial_scan_of_a_directory_covers_its_files() {
+        let mut app = demo();
+        app.have_baseline = true;
+        app.apply_resp(Resp::StatusPaths { scanned: vec!["src".into()], files: Vec::new() });
+        assert!(!app.repo.files.iter().any(|f| f.path.starts_with("src/")));
+        assert!(app.repo.files.iter().any(|f| f.path == "notes.txt"), "outside src it stays");
+    }
+
+    // Without a full scan first there is nothing to build on, thus a
+    // change of the work tree must ask for the whole thing.
+    #[test]
+    fn no_partial_scan_before_the_first_full_one() {
+        let mut app = demo();
+        app.have_baseline = false;
+        app.update(Msg::Dirty(Some(vec!["a.txt".into()])));
+        // No git worker runs in a test. The point is that it did not panic
+        // and did not mark a baseline it never had.
+        assert!(!app.have_baseline);
+    }
+
+    #[test]
+    fn under_matches_a_path_and_its_directory() {
+        assert!(under("src/main.rs", "src"));
+        assert!(under("src/main.rs", "src/main.rs"));
+        // A name that only shares letters is not under it.
+        assert!(!under("srcfile.rs", "src"));
+        assert!(!under("other/main.rs", "src"));
     }
 
     #[test]

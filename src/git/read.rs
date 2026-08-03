@@ -7,7 +7,21 @@ use std::sync::mpsc::{Receiver, Sender};
 use super::{CommitEntry, FileEntry, LogReq, Resp};
 use crate::event::Msg;
 
+/// Look at the given paths only, and say what was looked at. A walk of a
+/// large work tree costs a lot, thus naming the paths saves nearly all of
+/// it when a few files changed.
+pub fn status_paths(repo: &gix::Repository, paths: &[String]) -> Option<Resp> {
+    let files = scan(repo, paths.iter().map(|p| p.as_str().into()).collect())?;
+    Some(Resp::StatusPaths { scanned: paths.to_vec(), files })
+}
+
 pub fn status(repo: &gix::Repository) -> Option<Resp> {
+    Some(Resp::Status(scan(repo, Vec::new())?))
+}
+
+/// The state of every path, or of the named paths when the list is not
+/// empty. An empty list means the whole work tree.
+fn scan(repo: &gix::Repository, patterns: Vec<gix::bstr::BString>) -> Option<Vec<FileEntry>> {
     // Do not track renames. Rename tracking reads blob content, which is
     // costly and can cause network fetches in a partial clone.
     let platform = repo
@@ -23,11 +37,11 @@ pub fn status(repo: &gix::Repository) -> Option<Resp> {
     // marks, not two rows.
     let mut marks: BTreeMap<String, (char, char)> = BTreeMap::new();
     if index_matches_head(repo) {
-        for item in platform.into_index_worktree_iter(None).ok()?.filter_map(Result::ok) {
+        for item in platform.into_index_worktree_iter(patterns).ok()?.filter_map(Result::ok) {
             marks.entry(item.rela_path().to_string()).or_insert((' ', ' ')).1 = worktree_mark(&item);
         }
     } else {
-        for item in platform.into_iter(None).ok()?.filter_map(Result::ok) {
+        for item in platform.into_iter(patterns).ok()?.filter_map(Result::ok) {
             use gix::status::Item;
             let path = item.location().to_string();
             let slot = marks.entry(path).or_insert((' ', ' '));
@@ -45,11 +59,7 @@ pub fn status(repo: &gix::Repository) -> Option<Resp> {
             }
         }
     }
-    let files = marks
-        .into_iter()
-        .map(|(path, (index, work))| FileEntry { index, work, path })
-        .collect();
-    Some(Resp::Status(files))
+    Some(marks.into_iter().map(|(path, (index, work))| FileEntry { index, work, path }).collect())
 }
 
 // Compare the index cache-tree root with the HEAD tree. A valid and equal
