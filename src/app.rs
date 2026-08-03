@@ -1826,6 +1826,9 @@ impl App {
             }
             Resp::Worktrees(list) => self.mode = Mode::Worktrees { list, cursor: 0 },
             Resp::Reflog(list) => self.mode = Mode::Reflog { list, cursor: 0 },
+            // A command the program started on its own. It writes to the
+            // log, and it never takes the screen away from you.
+            Resp::Background { ok, cmd, output, ms } => self.log_cmd(ok, cmd, ms, output),
             Resp::Tags(map) => self.repo.tags = map,
             Resp::Blame { path, lines } => {
                 if lines.is_empty() {

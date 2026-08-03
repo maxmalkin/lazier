@@ -171,6 +171,9 @@ pub enum Resp {
     /// `output` holds the first lines that the command printed. The command
     /// log shows them.
     WriteDone { ok: bool, cmd: String, output: Vec<String>, ms: u64 },
+    /// A command that the program started on its own. It only writes to
+    /// the log, thus it never opens a window over your work.
+    Background { ok: bool, cmd: String, output: Vec<String>, ms: u64 },
     Sync {
         ahead: u32,
         behind: u32,
@@ -254,6 +257,7 @@ pub fn spawn(event_tx: Sender<Msg>) -> anyhow::Result<Git> {
 
     let (repo, ev, log_root) = (shared.clone(), event_tx.clone(), root.clone());
     std::thread::spawn(move || read::log_thread(repo, log_root, log_rx, ev));
+    spawn_auto_fetch(root.clone(), event_tx.clone());
 
     let worker_root = root.clone();
     let scanning = Arc::new(AtomicBool::new(false));
@@ -410,6 +414,60 @@ pub fn spawn(event_tx: Sender<Msg>) -> anyhow::Result<Git> {
     });
 
     Ok(Git { tx, log_tx, root, git_dir })
+}
+
+/// How long to wait between one quiet fetch and the next. LAZIER_FETCH_SECS
+/// sets another number of seconds, and zero turns the fetching off.
+fn fetch_every() -> Option<std::time::Duration> {
+    let secs = std::env::var("LAZIER_FETCH_SECS")
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .unwrap_or(180);
+    (secs > 0).then(|| std::time::Duration::from_secs(secs))
+}
+
+/// Fetch from the remote now and then, thus the count of commits you are
+/// behind stays true. It writes nothing to the screen and it never opens a
+/// window, because you did not ask for it.
+fn spawn_auto_fetch(root: PathBuf, ev: Sender<Msg>) {
+    let Some(every) = fetch_every() else { return };
+    std::thread::spawn(move || {
+        // A repository with no remote has nothing to fetch.
+        let has_remote = Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .arg("remote")
+            .output()
+            .map(|o| !o.stdout.is_empty())
+            .unwrap_or(false);
+        if !has_remote {
+            return;
+        }
+        loop {
+            std::thread::sleep(every);
+            let start = std::time::Instant::now();
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(["fetch", "--quiet"])
+                // A fetch that waits for a password would wait for ever.
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .output();
+            let ms = start.elapsed().as_millis() as u64;
+            let ok = out.as_ref().map(|o| o.status.success()).unwrap_or(false);
+            if !ok {
+                let output = out.map(|o| take_lines(&o)).unwrap_or_default();
+                if ev.send(Msg::Git(Resp::Background { ok, cmd: "fetch".into(), output, ms })).is_err() {
+                    return;
+                }
+                continue;
+            }
+            // The counts come from the refs, thus they are right now.
+            if ev.send(Msg::Git(sync_state(&root))).is_err() {
+                return;
+            }
+        }
+    });
 }
 
 /// True for a command that talks to a remote. Those commands are slow.
