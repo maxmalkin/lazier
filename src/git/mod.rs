@@ -5,6 +5,8 @@ pub mod graph;
 pub mod patch;
 mod read;
 pub mod rebase;
+#[cfg(test)]
+mod tests;
 pub mod watch;
 
 use std::io::Write as _;
