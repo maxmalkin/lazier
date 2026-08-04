@@ -25,26 +25,31 @@ Less is better.
 
 | Test | | lazygit | lazier | |
 |------|---|--------:|-------:|----:|
-| 10 000 changed files | processor | 721 ms | **163 ms** | **~4.4x** |
-| | peak RSS | 49 MB | **16 MB** | **~3x** |
-| Linux kernel, 1.3M commits | start | 1963 ms | **1247 ms** | **~1.6x** |
-| | scroll 300 commits | 2556 ms | **1232 ms** | **~2x** |
-| | scroll 2000 commits | 2264 ms | **1316 ms** | **~1.7x** |
-| | peak RSS | 135 MB | **64 MB** | **~2.1x** |
-| Refresh 12 times, 10 000 files | processor | 4003 ms | **176 ms** | **~23x** |
-| Walk 300 files with diffs | processor | 1106 ms | **169 ms** | **~6.5x** |
-| Idle | processor | 0.2 % | **0.0 %** | — |
+| 10 000 changed files | processor | 748 ms | **187 ms** | **~4x** |
+| Refresh 12 times, 10 000 files | processor | 3477 ms | **178 ms** | **~20x** |
+| Walk 300 files with diffs | processor | 1263 ms | **147 ms** | **~9x** |
+| Linux kernel, 1.3M commits | scroll 2000 commits | 2196 ms | **1346 ms** | **~1.6x** |
+| | peak RSS | 136 MB | **79 MB** | **~1.7x** |
+| | start | **823 ms** | 1293 ms | ~0.6x |
+| 5000-line diff | peak RSS | 27 MB | **10 MB** | **~2.7x** |
+| Idle | processor | 0.3 % | **0.0 %** | — |
 | Program file | | 17 MB | **3.4 MB** | **~5x** |
 
-lazier uses less memory in every test, and it uses no processor time when
-you touch no key.
+lazier uses less memory in every test and no processor time when you touch
+no key. lazygit starts more quickly on the kernel repository: it runs
+several `git` processes at once and pays for it in memory.
+
+A file that changes outside the program needs no walk of the whole work
+tree. lazier watches the work tree and looks only at what changed, which on
+the kernel repository is **150 ms** in place of **1212 ms**.
 
 **Why it is fast.** lazygit starts a `git` process for each read and parses
 the text. lazier reads the repository in its own process with gitoxide.
 Worker threads do all git work, thus the screen never waits. A list shows
 only the rows in view. A refresh keeps the commits that are already in
-memory when HEAD did not move. Writes still go to the `git` command, thus
-your hooks, credential helper, and GPG key continue to work.
+memory when HEAD did not move, and looks at the whole work tree only when
+a command could have changed a file. Writes still go to the `git` command,
+thus your hooks, credential helper, and GPG key continue to work.
 
 ## Install
 
