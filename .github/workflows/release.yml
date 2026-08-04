@@ -62,9 +62,12 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
+      - name: Make the checksum file
+        run: sha256sum *.tar.gz *.zip > lazier-sha256sums.txt
       - uses: softprops/action-gh-release@v2
         with:
           files: |
             *.tar.gz
             *.zip
+            lazier-sha256sums.txt
           generate_release_notes: true

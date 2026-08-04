@@ -9,6 +9,9 @@ license = "MIT"
 readme = "README.md"
 keywords = ["git", "tui", "terminal", "ratatui"]
 categories = ["command-line-utilities", "development-tools"]
+# Keep the package small. A user who installs the program does not need
+# the test data or the build instructions.
+exclude = ["src/snapshots/", ".github/", ".gitignore"]
 
 [profile.release]
 # A smaller and quicker program. The build takes more time.
