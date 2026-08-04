@@ -19,6 +19,34 @@ and [gitoxide](https://github.com/GitoxideLabs/gitoxide).
 It does the work of [lazygit](https://github.com/jesseduffield/lazygit)
 with less memory and less processor time, along with some new features.
 
+## Features
+
+- stage by file, directory, hunk, or single line
+- commit, amend, reword, revert, cherry-pick, fixup
+- absorb: send each staged change back to the commit that wrote it
+- split one commit into several
+- interactive rebase, and rebase onto another branch
+- bisect
+- branches: check out, make, delete, rename, merge
+- stash: all, untracked too, staged only, or one file
+- tags: make and push
+- worktrees
+- submodules
+- reflog, to go back to where HEAD has been
+- blame
+- take ours or theirs in a conflict
+- commit graph, with a full-screen view
+- word-level diff
+- file tree, with directories you can fold
+- mark several files, thus the next key works on each one
+- search the commit messages
+- ignore a file, for everybody or for yourself
+- push, pull, fetch, and a force push with a lease
+- fetch in the background, on a timer
+- command log, with the result and the time of each command
+- run a command line through your shell
+- mouse and keyboard
+
 ## Speed and memory
 
 Less is better.

@@ -1,7 +1,5 @@
 name: release
 
-# Build the program for each platform when a version tag arrives.
-# Put the results on the release page.
 on:
   push:
     tags: ["v*"]
@@ -18,8 +16,6 @@ jobs:
         include:
           - os: macos-14
             target: aarch64-apple-darwin
-          # Apple Silicon runners can build the Intel program. Intel
-          # runners are scarce, thus this is quicker.
           - os: macos-14
             target: x86_64-apple-darwin
           - os: ubuntu-latest
@@ -28,7 +24,6 @@ jobs:
             target: aarch64-unknown-linux-gnu
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-          # Intel Windows runners can build the ARM program.
           - os: windows-latest
             target: aarch64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
@@ -43,7 +38,6 @@ jobs:
         run: |
           tar -czf lazier-${{ matrix.target }}.tar.gz \
             -C target/${{ matrix.target }}/release lazier
-      # Windows users expect a zip file.
       - name: Make the archive for Windows
         if: runner.os == 'Windows'
         shell: pwsh
