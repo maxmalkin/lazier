@@ -50,7 +50,11 @@ impl Repo {
             .args(args)
             .output()
             .expect("run git");
-        assert!(out.status.success(), "git {args:?} failed: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
@@ -188,8 +192,7 @@ fn a_scan_of_a_path_agrees_with_the_full_scan() {
     let full = repo.status();
     for path in ["src", "start.txt"] {
         let rows = repo.status_paths(&[path]);
-        let want: Vec<String> =
-            full.iter().filter(|r| r[3..].starts_with(path)).cloned().collect();
+        let want: Vec<String> = full.iter().filter(|r| r[3..].starts_with(path)).cloned().collect();
         assert_eq!(rows, want, "the scan of {path} must agree with the full scan");
     }
 }

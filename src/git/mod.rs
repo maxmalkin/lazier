@@ -106,18 +106,31 @@ pub enum Req {
     StatusPaths(Vec<String>),
     Branches,
     Stashes,
-    LogChunk { count: usize },
-    LogRefresh { count: usize },
+    LogChunk {
+        count: usize,
+    },
+    LogRefresh {
+        count: usize,
+    },
     LogFilter(Option<String>),
-    Diff { seq: u64, target: DiffTarget },
+    Diff {
+        seq: u64,
+        target: DiffTarget,
+    },
     /// Run a git command with the given arguments. Capture the output.
     Write(Vec<String>),
     /// Apply a patch to the index. Reverse removes it from the index.
-    ApplyPatch { patch: String, reverse: bool },
+    ApplyPatch {
+        patch: String,
+        reverse: bool,
+    },
     /// Read the sync state against the upstream branch.
     Sync,
     /// Read the full message of a commit, for the reword window.
-    ReadMessage { id: String, index: usize },
+    ReadMessage {
+        id: String,
+        index: usize,
+    },
     /// List the worktrees of the repository.
     Worktrees,
     /// List the recent positions of HEAD.
@@ -132,12 +145,17 @@ pub enum Req {
     Submodules,
     /// Send each staged change back to the commit that last wrote those
     /// lines. Only the commits in the set may take a change.
-    Absorb { own: std::collections::HashSet<String> },
+    Absorb {
+        own: std::collections::HashSet<String>,
+    },
     /// Run a command line through the shell, in the root of the repository.
     Shell(String),
     /// Add a pattern to the ignore rules. `local` writes to the private
     /// file of the repository, thus no other person sees the rule.
-    Ignore { pattern: String, local: bool },
+    Ignore {
+        pattern: String,
+        local: bool,
+    },
 }
 
 pub struct WorktreeEntry {
@@ -155,33 +173,65 @@ pub struct WorktreeEntry {
 pub enum DiffTarget {
     /// A file in the work tree. Git does not track a new file, thus its
     /// diff needs another command.
-    WorktreeFile { path: String, untracked: bool },
+    WorktreeFile {
+        path: String,
+        untracked: bool,
+    },
     Commit(String),
     /// A stash entry, by its position in the list.
     Stash(usize),
     /// Everything between two commits.
-    Range { from: String, to: String },
+    Range {
+        from: String,
+        to: String,
+    },
 }
 
 pub enum Resp {
     Status(Vec<FileEntry>),
     /// The state of the paths that were looked at. A path that was looked
     /// at and is not in `files` has no change any more.
-    StatusPaths { scanned: Vec<String>, files: Vec<FileEntry> },
-    Branches { current: Option<String>, entries: Vec<BranchEntry> },
+    StatusPaths {
+        scanned: Vec<String>,
+        files: Vec<FileEntry>,
+    },
+    Branches {
+        current: Option<String>,
+        entries: Vec<BranchEntry>,
+    },
     Stashes(Vec<String>),
-    LogChunk { entries: Vec<CommitEntry>, done: bool },
+    LogChunk {
+        entries: Vec<CommitEntry>,
+        done: bool,
+    },
     /// HEAD moved. These entries take the place of the whole list.
-    LogReplace { entries: Vec<CommitEntry>, done: bool },
+    LogReplace {
+        entries: Vec<CommitEntry>,
+        done: bool,
+    },
     /// `text` is the work-tree diff. `staged` is the index diff. A commit
     /// puts everything in `text` and leaves `staged` empty.
-    Diff { seq: u64, text: String, staged: String },
+    Diff {
+        seq: u64,
+        text: String,
+        staged: String,
+    },
     /// `output` holds the first lines that the command printed. The command
     /// log shows them.
-    WriteDone { ok: bool, cmd: String, output: Vec<String>, ms: u64 },
+    WriteDone {
+        ok: bool,
+        cmd: String,
+        output: Vec<String>,
+        ms: u64,
+    },
     /// A command that the program started on its own. It only writes to
     /// the log, thus it never opens a window over your work.
-    Background { ok: bool, cmd: String, output: Vec<String>, ms: u64 },
+    Background {
+        ok: bool,
+        cmd: String,
+        output: Vec<String>,
+        ms: u64,
+    },
     Sync {
         ahead: u32,
         behind: u32,
@@ -189,12 +239,18 @@ pub enum Resp {
         /// The upstream branch, such as "origin/main".
         upstream: Option<String>,
     },
-    Message { text: String, index: usize },
+    Message {
+        text: String,
+        index: usize,
+    },
     Worktrees(Vec<WorktreeEntry>),
     Reflog(Vec<ReflogEntry>),
     /// A tag name for each commit that carries one.
     Tags(std::collections::HashMap<String, Vec<String>>),
-    Blame { path: String, lines: Vec<BlameLine> },
+    Blame {
+        path: String,
+        lines: Vec<BlameLine>,
+    },
     Submodules(Vec<SubmoduleEntry>),
 }
 
@@ -249,10 +305,7 @@ impl Git {
 /// The other worker does all other reads and all writes.
 pub fn spawn(event_tx: Sender<Msg>) -> anyhow::Result<Git> {
     let shared = Arc::new(gix::ThreadSafeRepository::discover(".")?);
-    let root: PathBuf = shared
-        .work_dir()
-        .map(Into::into)
-        .unwrap_or_else(|| shared.path().into());
+    let root: PathBuf = shared.work_dir().map(Into::into).unwrap_or_else(|| shared.path().into());
     // Discovery can give a relative path such as ".". A full path is needed
     // to name the parent directory and to compare worktrees.
     let root = root.canonicalize().unwrap_or(root);
@@ -279,8 +332,7 @@ pub fn spawn(event_tx: Sender<Msg>) -> anyhow::Result<Git> {
                 // sees the same work tree.
                 Req::Status => {
                     if !scanning.swap(true, Ordering::AcqRel) {
-                        let (sh, ev, flag) =
-                            (shared.clone(), event_tx.clone(), scanning.clone());
+                        let (sh, ev, flag) = (shared.clone(), event_tx.clone(), scanning.clone());
                         std::thread::spawn(move || {
                             let repo = sh.to_thread_local();
                             let resp = read::status(&repo);
@@ -321,14 +373,14 @@ pub fn spawn(event_tx: Sender<Msg>) -> anyhow::Result<Git> {
                     });
                     None
                 }
-                Req::ApplyPatch { patch, reverse } => Some(apply_patch(&worker_root, &patch, reverse)),
+                Req::ApplyPatch { patch, reverse } => {
+                    Some(apply_patch(&worker_root, &patch, reverse))
+                }
                 Req::Sync => Some(sync_state(&worker_root)),
                 Req::Worktrees => Some(Resp::Worktrees(worktrees(&worker_root))),
                 Req::Reflog => Some(Resp::Reflog(reflog(&worker_root))),
                 Req::Tags => read::tags(&repo),
-                Req::Blame(path) => {
-                    Some(Resp::Blame { lines: blame(&worker_root, &path), path })
-                }
+                Req::Blame(path) => Some(Resp::Blame { lines: blame(&worker_root, &path), path }),
                 Req::Submodules => Some(Resp::Submodules(submodules(&worker_root))),
                 // The work can take seconds on a big change, thus it runs
                 // on a thread of its own.
@@ -468,7 +520,10 @@ fn spawn_auto_fetch(root: PathBuf, ev: Sender<Msg>) {
             let ok = out.as_ref().map(|o| o.status.success()).unwrap_or(false);
             if !ok {
                 let output = out.map(|o| take_lines(&o)).unwrap_or_default();
-                if ev.send(Msg::Git(Resp::Background { ok, cmd: "fetch".into(), output, ms })).is_err() {
+                if ev
+                    .send(Msg::Git(Resp::Background { ok, cmd: "fetch".into(), output, ms }))
+                    .is_err()
+                {
                     return;
                 }
                 continue;
@@ -488,8 +543,7 @@ pub fn is_network(args: &[String]) -> bool {
 
 /// Editors to try when git names one that is not on this machine. The
 /// first ones are the easiest to leave.
-const FALLBACK_EDITORS: &[&str] =
-    &["nano", "micro", "hx", "helix", "nvim", "vim", "vi", "notepad"];
+const FALLBACK_EDITORS: &[&str] = &["nano", "micro", "hx", "helix", "nvim", "vim", "vi", "notepad"];
 
 #[cfg(windows)]
 const EXE_SUFFIXES: &[&str] = &["", ".exe", ".cmd", ".bat"];
@@ -527,10 +581,11 @@ fn on_path(cmd: &str) -> bool {
     if program.contains('/') || program.contains('\\') {
         return std::path::Path::new(program).is_file();
     }
-    let Some(path) = std::env::var_os("PATH") else { return false };
-    std::env::split_paths(&path).any(|dir| {
-        EXE_SUFFIXES.iter().any(|end| dir.join(format!("{program}{end}")).is_file())
-    })
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path)
+        .any(|dir| EXE_SUFFIXES.iter().any(|end| dir.join(format!("{program}{end}")).is_file()))
 }
 
 /// The number of output lines that the command log keeps.
@@ -538,11 +593,8 @@ const LOG_LINES: usize = 6;
 
 fn take_lines(out: &std::process::Output) -> Vec<String> {
     // Git writes progress to stderr, thus both streams matter.
-    let text = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
+    let text =
+        format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     text.lines().filter(|l| !l.trim().is_empty()).take(LOG_LINES).map(str::to_string).collect()
 }
 
@@ -578,7 +630,9 @@ fn run_shell(root: &PathBuf, line: &str) -> Resp {
             output: take_lines(&out),
             ms,
         },
-        Err(e) => Resp::WriteDone { ok: false, cmd: format!(": {line}"), output: vec![e.to_string()], ms },
+        Err(e) => {
+            Resp::WriteDone { ok: false, cmd: format!(": {line}"), output: vec![e.to_string()], ms }
+        }
     }
 }
 
@@ -654,7 +708,6 @@ fn branches(root: &PathBuf) -> Vec<BranchEntry> {
     }
     list
 }
-
 
 /// Who last changed each line of a file. The porcelain form is stable,
 /// thus it is safer to read than the plain one.
@@ -771,11 +824,8 @@ fn reflog(root: &PathBuf) -> Vec<ReflogEntry> {
 /// List the worktrees. The output has one block for each worktree. A block
 /// has a "worktree" line and often a "branch" line.
 fn worktrees(root: &PathBuf) -> Vec<WorktreeEntry> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["worktree", "list", "--porcelain"])
-        .output();
+    let out =
+        Command::new("git").arg("-C").arg(root).args(["worktree", "list", "--porcelain"]).output();
     let Ok(out) = out else { return Vec::new() };
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
     // Compare real paths. A symbolic link makes two names for one directory.
@@ -812,8 +862,12 @@ fn worktrees(root: &PathBuf) -> Vec<WorktreeEntry> {
 /// Make a short age from the words that git gives. "3 days ago" gives "3d".
 fn short_age(text: &str) -> String {
     let mut words = text.split_whitespace();
-    let Some(n) = words.next() else { return String::new() };
-    let Some(unit) = words.next() else { return String::new() };
+    let Some(n) = words.next() else {
+        return String::new();
+    };
+    let Some(unit) = words.next() else {
+        return String::new();
+    };
     // "2 years, 3 months ago" keeps only the first part.
     let letter = unit.trim_end_matches(',').chars().next().unwrap_or(' ');
     match n.parse::<u32>() {
@@ -825,7 +879,13 @@ fn short_age(text: &str) -> String {
 
 fn track_count(track: &str, word: &str) -> u32 {
     match track.split_once(word) {
-        Some((_, rest)) => rest.trim_start().split(|c: char| !c.is_ascii_digit()).next().unwrap_or("").parse().unwrap_or(0),
+        Some((_, rest)) => rest
+            .trim_start()
+            .split(|c: char| !c.is_ascii_digit())
+            .next()
+            .unwrap_or("")
+            .parse()
+            .unwrap_or(0),
         None => 0,
     }
 }
@@ -881,14 +941,12 @@ fn display_diff(root: &PathBuf, target: &DiffTarget) -> (String, String) {
             (run(&["diff", "--", path]), run(&["diff", "--cached", "--", path]))
         }
         DiffTarget::Commit(id) => (run(&["show", "--stat", "--patch", id]), String::new()),
-        DiffTarget::Range { from, to } => (
-            run(&["diff", "--stat", "--patch", &format!("{from}..{to}")]),
-            String::new(),
-        ),
-        DiffTarget::Stash(i) => (
-            run(&["stash", "show", "--stat", "--patch", &format!("stash@{{{i}}}")]),
-            String::new(),
-        ),
+        DiffTarget::Range { from, to } => {
+            (run(&["diff", "--stat", "--patch", &format!("{from}..{to}")]), String::new())
+        }
+        DiffTarget::Stash(i) => {
+            (run(&["stash", "show", "--stat", "--patch", &format!("stash@{{{i}}}")]), String::new())
+        }
     }
 }
 

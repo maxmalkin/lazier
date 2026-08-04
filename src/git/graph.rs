@@ -67,7 +67,13 @@ impl<T: PartialEq + Clone> Graph<T> {
         for &target in joins.iter().chain(&merges).chain(&opened) {
             let (lo, hi) = (col.min(target), col.max(target));
             for pos in (2 * lo + 1)..(2 * hi) {
-                cells[pos] = if pos % 2 == 0 && cells[pos] == '│' { '┼' } else if pos % 2 == 1 { '─' } else { cells[pos] };
+                cells[pos] = if pos % 2 == 0 && cells[pos] == '│' {
+                    '┼'
+                } else if pos % 2 == 1 {
+                    '─'
+                } else {
+                    cells[pos]
+                };
             }
         }
         for &j in &joins {

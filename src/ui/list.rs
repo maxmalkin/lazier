@@ -28,16 +28,16 @@ pub fn render(
 ) {
     let border = if focused { Color::Green } else { Color::DarkGray };
     let mut block = Block::bordered()
-        .title(Span::styled(title.to_string(), Style::new().fg(border).add_modifier(Modifier::BOLD)))
+        .title(Span::styled(
+            title.to_string(),
+            Style::new().fg(border).add_modifier(Modifier::BOLD),
+        ))
         .border_style(Style::new().fg(border));
     // The count sits in the bottom border, as lazygit does it.
     if len > 0 {
         block = block.title_bottom(
-            Line::styled(
-                format!("{} of {}", selected + 1, len),
-                Style::new().fg(border),
-            )
-            .right_aligned(),
+            Line::styled(format!("{} of {}", selected + 1, len), Style::new().fg(border))
+                .right_aligned(),
         );
     }
     let inner = block.inner(area);

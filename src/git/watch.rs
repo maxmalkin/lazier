@@ -19,13 +19,15 @@ fn interesting(path: &Path) -> bool {
 pub fn spawn(git_dir: PathBuf, tx: Sender<Msg>) {
     std::thread::spawn(move || {
         let (wtx, wrx) = std::sync::mpsc::channel();
-        let Ok(mut watcher) = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-            if let Ok(ev) = res
-                && ev.paths.iter().any(|p| interesting(p))
-            {
-                let _ = wtx.send(());
-            }
-        }) else {
+        let Ok(mut watcher) =
+            notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+                if let Ok(ev) = res
+                    && ev.paths.iter().any(|p| interesting(p))
+                {
+                    let _ = wtx.send(());
+                }
+            })
+        else {
             return;
         };
         if watcher.watch(&git_dir, RecursiveMode::Recursive).is_err() {
@@ -54,24 +56,26 @@ const MAX_PATHS: usize = 300;
 pub fn spawn_worktree(root: PathBuf, tx: Sender<Msg>) {
     std::thread::spawn(move || {
         let (wtx, wrx) = std::sync::mpsc::channel::<Option<PathBuf>>();
-        let Ok(mut watcher) = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-            match res {
-                Ok(ev) => {
-                    // The watcher lost events, thus what changed is unknown.
-                    if matches!(ev.kind, notify::EventKind::Other) {
+        let Ok(mut watcher) =
+            notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+                match res {
+                    Ok(ev) => {
+                        // The watcher lost events, thus what changed is unknown.
+                        if matches!(ev.kind, notify::EventKind::Other) {
+                            let _ = wtx.send(None);
+                            return;
+                        }
+                        for p in ev.paths {
+                            let _ = wtx.send(Some(p));
+                        }
+                    }
+                    // An error leaves the truth unknown, thus ask for a full scan.
+                    Err(_) => {
                         let _ = wtx.send(None);
-                        return;
-                    }
-                    for p in ev.paths {
-                        let _ = wtx.send(Some(p));
                     }
                 }
-                // An error leaves the truth unknown, thus ask for a full scan.
-                Err(_) => {
-                    let _ = wtx.send(None);
-                }
-            }
-        }) else {
+            })
+        else {
             return;
         };
         // A work tree that cannot be watched keeps the old behaviour: every
@@ -92,9 +96,7 @@ pub fn spawn_worktree(root: PathBuf, tx: Sender<Msg>) {
                     None => unknown = true,
                 }
             }
-            let names = (!unknown)
-                .then(|| relative_names(&root, paths))
-                .flatten();
+            let names = (!unknown).then(|| relative_names(&root, paths)).flatten();
             if tx.send(Msg::Dirty(names)).is_err() {
                 return;
             }

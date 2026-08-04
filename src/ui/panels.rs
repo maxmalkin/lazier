@@ -6,8 +6,8 @@ use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 
 use super::list;
 use crate::app::{App, PANELS};
-use crate::git::{BranchEntry, CommitEntry};
 use crate::git::rebase::{TodoAction, TodoItem};
+use crate::git::{BranchEntry, CommitEntry};
 
 fn mark_color(mark: char) -> Color {
     match mark {
@@ -20,7 +20,6 @@ fn mark_color(mark: char) -> Color {
         _ => Color::DarkGray,
     }
 }
-
 
 // One color for each graph lane. The palette repeats after six lanes.
 const LANE_COLORS: [Color; 6] =
@@ -284,7 +283,15 @@ pub fn render_left(frame: &mut Frame, areas: [Rect; 5], app: &App) {
             (3, _, Some(id)) => format!("[4]─Commits─from {id}"),
             _ => format!("[{}]─{}", i + 1, PANELS[i]),
         };
-        list::render(frame, area, &title, app.focus == i, app.selected[i], app.panel_len(i), rows[i]);
+        list::render(
+            frame,
+            area,
+            &title,
+            app.focus == i,
+            app.selected[i],
+            app.panel_len(i),
+            rows[i],
+        );
     }
 }
 
@@ -326,7 +333,10 @@ pub fn render_rebase(frame: &mut Frame, area: Rect, items: &[TodoItem], cursor: 
                 TodoAction::Drop => Color::Red,
             };
             Line::from(vec![
-                Span::styled(format!("{:<7}", it.action.word()), Style::new().fg(color).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    format!("{:<7}", it.action.word()),
+                    Style::new().fg(color).add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(format!("{} ", it.id), Style::new().fg(Color::DarkGray)),
                 Span::raw(it.subject.clone()),
             ])
@@ -347,10 +357,7 @@ fn word_pair(old: &str, new: &str) -> Option<(Line<'static>, Line<'static>)> {
             Span::styled(body[b..].to_string(), Style::new().fg(color)),
         ])
     };
-    Some((
-        build("-", o_body, s.old, Color::Red),
-        build("+", n_body, s.new, Color::Green),
-    ))
+    Some((build("-", o_body, s.old, Color::Red), build("+", n_body, s.new, Color::Green)))
 }
 
 // Color one line of a diff.
@@ -537,12 +544,12 @@ pub fn render_worktrees(
         };
         Line::from(vec![
             Span::styled(icon, Style::new().fg(Color::Green)),
-            Span::styled(
-                format!(" {:<w$.w$}", w.branch, w = branch_col),
-                branch_style,
-            ),
+            Span::styled(format!(" {:<w$.w$}", w.branch, w = branch_col), branch_style),
             Span::styled(shorten(&path, room), Style::new().fg(Color::Gray)),
-            Span::styled(tag, Style::new().fg(if w.prunable { Color::Red } else { Color::DarkGray })),
+            Span::styled(
+                tag,
+                Style::new().fg(if w.prunable { Color::Red } else { Color::DarkGray }),
+            ),
         ])
     });
 }
@@ -631,7 +638,10 @@ pub fn render_log(frame: &mut Frame, area: Rect, app: &App) {
         let time_color = if e.ms >= 500 { Color::Yellow } else { Color::DarkGray };
         let mut out = vec![Line::from(vec![
             Span::styled(format!("{icon} "), Style::new().fg(color)),
-            Span::styled(e.cmd.clone(), Style::new().fg(if e.ok { Color::Gray } else { Color::Red })),
+            Span::styled(
+                e.cmd.clone(),
+                Style::new().fg(if e.ok { Color::Gray } else { Color::Red }),
+            ),
             Span::styled(format!("  {}ms", e.ms), Style::new().fg(time_color)),
         ])];
         let color = if e.ok { Color::DarkGray } else { Color::Red };

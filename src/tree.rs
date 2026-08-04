@@ -22,7 +22,8 @@ pub fn build(files: &[FileEntry], collapsed: &HashSet<String>) -> Vec<TreeRow> {
 
     // The root of the repository is the first row. Its path is the empty
     // string, thus a fold of the root hides every other row.
-    let mut rows = vec![TreeRow { depth: 0, name: "/".into(), dir: Some(String::new()), file: None }];
+    let mut rows =
+        vec![TreeRow { depth: 0, name: "/".into(), dir: Some(String::new()), file: None }];
     if collapsed.contains("") {
         return rows;
     }
@@ -90,10 +91,7 @@ mod tests {
         let files = entries(&["a/b/f1", "a/f2", "top.txt"]);
         let rows = build(&files, &HashSet::new());
         let names: Vec<(&str, u8)> = rows.iter().map(|r| (r.name.as_str(), r.depth)).collect();
-        assert_eq!(
-            names,
-            [("/", 0), ("a", 1), ("b", 2), ("f1", 3), ("f2", 2), ("top.txt", 1)]
-        );
+        assert_eq!(names, [("/", 0), ("a", 1), ("b", 2), ("f1", 3), ("f2", 2), ("top.txt", 1)]);
 
         let collapsed: HashSet<String> = ["a/b".to_string()].into();
         let rows = build(&files, &collapsed);

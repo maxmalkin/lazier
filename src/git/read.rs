@@ -38,7 +38,8 @@ fn scan(repo: &gix::Repository, patterns: Vec<gix::bstr::BString>) -> Option<Vec
     let mut marks: BTreeMap<String, (char, char)> = BTreeMap::new();
     if index_matches_head(repo) {
         for item in platform.into_index_worktree_iter(patterns).ok()?.filter_map(Result::ok) {
-            marks.entry(item.rela_path().to_string()).or_insert((' ', ' ')).1 = worktree_mark(&item);
+            marks.entry(item.rela_path().to_string()).or_insert((' ', ' ')).1 =
+                worktree_mark(&item);
         }
     } else {
         for item in platform.into_iter(patterns).ok()?.filter_map(Result::ok) {
@@ -65,9 +66,15 @@ fn scan(repo: &gix::Repository, patterns: Vec<gix::bstr::BString>) -> Option<Vec
 // Compare the index cache-tree root with the HEAD tree. A valid and equal
 // root means that the index has no staged changes.
 fn index_matches_head(repo: &gix::Repository) -> bool {
-    let Ok(commit) = repo.head_commit() else { return false };
-    let Ok(head_tree) = commit.tree_id() else { return false };
-    let Ok(index) = repo.index() else { return false };
+    let Ok(commit) = repo.head_commit() else {
+        return false;
+    };
+    let Ok(head_tree) = commit.tree_id() else {
+        return false;
+    };
+    let Ok(index) = repo.index() else {
+        return false;
+    };
     match index.tree() {
         Some(t) if t.num_entries.is_some() => t.id == head_tree,
         _ => false,
@@ -258,7 +265,10 @@ pub fn log_thread(
                         let row = graph.row(&info.id, &parents);
                         let (subject, author, time) = match info.object() {
                             Ok(c) => (
-                                c.message().ok().map(|m| m.summary().to_string()).unwrap_or_default(),
+                                c.message()
+                                    .ok()
+                                    .map(|m| m.summary().to_string())
+                                    .unwrap_or_default(),
                                 c.author().ok().map(|a| a.name.to_string()).unwrap_or_default(),
                                 c.time().ok().map(|t| t.seconds.max(0) as u32).unwrap_or(0),
                             ),

@@ -1,6 +1,6 @@
 mod list;
-mod words;
 mod panels;
+mod words;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -25,8 +25,7 @@ pub struct Panes {
 }
 
 pub fn panes(area: Rect, show_log: bool) -> Panes {
-    let [body, _bar] =
-        Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(area);
+    let [body, _bar] = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(area);
     let [left, main] =
         Layout::horizontal([Constraint::Percentage(35), Constraint::Percentage(65)]).areas(body);
     let left: [Rect; 5] = Layout::vertical([
@@ -39,7 +38,8 @@ pub fn panes(area: Rect, show_log: bool) -> Panes {
     .areas(left);
     if show_log {
         // The diff takes most of the height. The log needs only a few rows.
-        let [diff, log] = Layout::vertical([Constraint::Fill(1), Constraint::Length(6)]).areas(main);
+        let [diff, log] =
+            Layout::vertical([Constraint::Fill(1), Constraint::Length(6)]).areas(main);
         Panes { left, diff, log: Some(log) }
     } else {
         Panes { left, diff: main, log: None }
@@ -108,45 +108,6 @@ fn centered(area: Rect, w: u16, h: u16) -> Rect {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // No key may appear twice in the bar, and a key the panel uses for
-    // something else must not be offered with its global meaning.
-    #[test]
-    fn the_hint_bar_never_repeats_or_lies() {
-        for focus in 0..6 {
-            let panel = HINTS[focus];
-            let globals = globals_for(focus, panel);
-            let mut keys: Vec<&str> = panel.iter().map(|(k, _)| *k).collect();
-            keys.extend(globals.iter().map(|(k, _)| *k));
-            let mut seen = std::collections::HashSet::new();
-            for k in &keys {
-                assert!(seen.insert(*k), "panel {focus} shows {k} twice");
-            }
-            for (k, _) in &globals {
-                assert!(
-                    !crate::keys::panel_claims(focus, k),
-                    "panel {focus} offers {k} but uses it for something else"
-                );
-            }
-        }
-    }
-
-    // The two that the panels take over: fixup on the commits panel and
-    // pop on the stash panel.
-    #[test]
-    fn a_panel_key_hides_the_global_one() {
-        let commits = globals_for(3, HINTS[3]);
-        assert!(!commits.iter().any(|(k, _)| *k == "f"), "f is fixup there");
-        assert!(commits.iter().any(|(k, _)| *k == "P"), "push still works");
-        let stash = globals_for(4, HINTS[4]);
-        assert!(!stash.iter().any(|(k, _)| *k == "p"), "p is pop there");
-        assert!(stash.iter().any(|(k, _)| *k == "f"), "fetch still works");
-    }
-}
-
 /// The window that shows a command that failed. The command log can be
 /// closed, thus a failure needs a window of its own.
 fn render_error(frame: &mut Frame, body: Rect, cmd: &str, output: &[String]) {
@@ -163,7 +124,8 @@ fn render_error(frame: &mut Frame, body: Rect, cmd: &str, output: &[String]) {
     let text = block.inner(area);
     frame.render_widget(block, area);
 
-    let mut lines = vec![Line::styled(cmd.to_string(), Style::new().fg(Color::White)), Line::default()];
+    let mut lines =
+        vec![Line::styled(cmd.to_string(), Style::new().fg(Color::White)), Line::default()];
     for l in output {
         lines.push(Line::styled(l.clone(), Style::new().fg(Color::Red)));
     }
@@ -331,7 +293,11 @@ fn render_new_worktree(
             Span::styled(branch.to_string(), Style::new().fg(Color::White)),
             Span::styled(if on_path { "" } else { "▏" }, active),
         ]))
-        .block(Block::bordered().title(branch_title).border_style(if on_path { idle } else { active })),
+        .block(Block::bordered().title(branch_title).border_style(if on_path {
+            idle
+        } else {
+            active
+        })),
         top,
     );
     // An empty path field shows the suggestion, in a dim color.
@@ -346,7 +312,11 @@ fn render_new_worktree(
             shown,
             Span::styled(if on_path { "▏" } else { "" }, active),
         ]))
-        .block(Block::bordered().title("path").border_style(if on_path { active } else { idle })),
+        .block(Block::bordered().title("path").border_style(if on_path {
+            active
+        } else {
+            idle
+        })),
         mid,
     );
     frame.render_widget(
@@ -382,8 +352,7 @@ fn render_confirm(frame: &mut Frame, body: Rect, prompt: &str) {
     let text = block.inner(area);
     frame.render_widget(block, area);
 
-    let [msg, hint] =
-        Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(text);
+    let [msg, hint] = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(text);
     frame.render_widget(
         Paragraph::new(prompt.to_string())
             .wrap(Wrap { trim: false })
@@ -419,12 +388,9 @@ fn render_commit(
     let inner = outer.inner(area);
     frame.render_widget(outer, area);
 
-    let [top, mid, hint] = Layout::vertical([
-        Constraint::Length(3),
-        Constraint::Fill(1),
-        Constraint::Length(1),
-    ])
-    .areas(inner);
+    let [top, mid, hint] =
+        Layout::vertical([Constraint::Length(3), Constraint::Fill(1), Constraint::Length(1)])
+            .areas(inner);
 
     let active = Style::new().fg(Color::Green);
     let idle = Style::new().fg(Color::DarkGray);
@@ -433,11 +399,11 @@ fn render_commit(
             Span::styled(summary.to_string(), Style::new().fg(Color::White)),
             Span::styled(if on_body { "" } else { "▏" }, active),
         ]))
-        .block(
-            Block::bordered()
-                .title("summary")
-                .border_style(if on_body { idle } else { active }),
-        ),
+        .block(Block::bordered().title("summary").border_style(if on_body {
+            idle
+        } else {
+            active
+        })),
         top,
     );
     frame.render_widget(
@@ -446,11 +412,11 @@ fn render_commit(
             Span::styled(if on_body { "▏" } else { "" }, active),
         ]))
         .wrap(Wrap { trim: false })
-        .block(
-            Block::bordered()
-                .title("body (optional)")
-                .border_style(if on_body { active } else { idle }),
-        ),
+        .block(Block::bordered().title("body (optional)").border_style(if on_body {
+            active
+        } else {
+            idle
+        })),
         mid,
     );
     let keys: Hints = match (on_body, purpose) {
@@ -629,16 +595,12 @@ fn render_bar(frame: &mut Frame, area: Rect, app: &App) {
             ("g/G", "Top/end"),
             ("<esc>", "Close"),
         ]]),
-        Mode::Submodules { .. } => hint_line(&[&[
-            ("<enter>", "Update this one"),
-            ("u", "Update all"),
-            ("<esc>", "Close"),
-        ]]),
-        Mode::Reflog { .. } => hint_line(&[&[
-            ("<enter>", "Move HEAD there"),
-            ("j/k", "Move"),
-            ("<esc>", "Close"),
-        ]]),
+        Mode::Submodules { .. } => {
+            hint_line(&[&[("<enter>", "Update this one"), ("u", "Update all"), ("<esc>", "Close")]])
+        }
+        Mode::Reflog { .. } => {
+            hint_line(&[&[("<enter>", "Move HEAD there"), ("j/k", "Move"), ("<esc>", "Close")]])
+        }
         Mode::Ignore { .. } => hint_line(&[&[
             ("i", "Share the rule"),
             ("e", "Keep it to yourself"),
@@ -754,10 +716,7 @@ const HELP: &[(&str, Hints)] = &[
             ("* ↑ ↓", "current branch, to push, to pull"),
         ],
     ),
-    (
-        "Submodules",
-        &[("M", "open the list"), ("enter / u", "update this one, or every one")],
-    ),
+    ("Submodules", &[("M", "open the list"), ("enter / u", "update this one, or every one")]),
     (
         "Go back",
         &[
@@ -876,9 +835,51 @@ fn render_help(frame: &mut Frame, body: Rect) {
     frame.render_widget(
         Paragraph::new(lines).block(
             Block::bordered()
-                .title(Span::styled(" Keys ", Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)))
+                .title(Span::styled(
+                    " Keys ",
+                    Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                ))
                 .border_style(Style::new().fg(Color::Cyan)),
         ),
         area,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // No key may appear twice in the bar, and a key the panel uses for
+    // something else must not be offered with its global meaning.
+    #[test]
+    fn the_hint_bar_never_repeats_or_lies() {
+        for (focus, panel) in HINTS.iter().enumerate() {
+            let panel = *panel;
+            let globals = globals_for(focus, panel);
+            let mut keys: Vec<&str> = panel.iter().map(|(k, _)| *k).collect();
+            keys.extend(globals.iter().map(|(k, _)| *k));
+            let mut seen = std::collections::HashSet::new();
+            for k in &keys {
+                assert!(seen.insert(*k), "panel {focus} shows {k} twice");
+            }
+            for (k, _) in &globals {
+                assert!(
+                    !crate::keys::panel_claims(focus, k),
+                    "panel {focus} offers {k} but uses it for something else"
+                );
+            }
+        }
+    }
+
+    // The two that the panels take over: fixup on the commits panel and
+    // pop on the stash panel.
+    #[test]
+    fn a_panel_key_hides_the_global_one() {
+        let commits = globals_for(3, HINTS[3]);
+        assert!(!commits.iter().any(|(k, _)| *k == "f"), "f is fixup there");
+        assert!(commits.iter().any(|(k, _)| *k == "P"), "push still works");
+        let stash = globals_for(4, HINTS[4]);
+        assert!(!stash.iter().any(|(k, _)| *k == "p"), "p is pop there");
+        assert!(stash.iter().any(|(k, _)| *k == "f"), "fetch still works");
+    }
 }

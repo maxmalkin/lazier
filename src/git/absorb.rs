@@ -21,12 +21,8 @@ struct Group {
 }
 
 fn git(root: &Path, args: &[&str]) -> Result<String, String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(args)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let out =
+        Command::new("git").arg("-C").arg(root).args(args).output().map_err(|e| e.to_string())?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
@@ -73,7 +69,9 @@ fn old_range(hunk: &str) -> Option<(u32, u32)> {
 /// the list, because the commit that wrote them is not the one to fix.
 /// A hunk that only adds lines gives the line above the new text.
 fn changed_lines(hunk: &str) -> Vec<u32> {
-    let Some((start, _)) = old_range(hunk) else { return Vec::new() };
+    let Some((start, _)) = old_range(hunk) else {
+        return Vec::new();
+    };
     let mut line = start;
     let mut out = Vec::new();
     // Where the first new text sits, for a hunk that removes nothing.
@@ -114,7 +112,8 @@ fn blame_target(root: &Path, file: &str, lines: &[u32]) -> Option<String> {
         let (Some(id), Some(_), Some(final_line)) = (p.next(), p.next(), p.next()) else {
             continue;
         };
-        if id.len() == 40 && id.chars().all(|c| c.is_ascii_hexdigit())
+        if id.len() == 40
+            && id.chars().all(|c| c.is_ascii_hexdigit())
             && let Ok(n) = final_line.parse::<u32>()
         {
             by_line.insert(n, id.to_string());
@@ -135,8 +134,12 @@ fn plan(root: &Path, staged: &str, may_take: &dyn Fn(&str) -> bool) -> (Vec<Grou
     let mut skipped = 0usize;
     // The diff holds one block for each file.
     for block in split_files(staged) {
-        let Some(file) = file_of(&block) else { continue };
-        let Some((header, hunks)) = patch::split_diff(&block) else { continue };
+        let Some(file) = file_of(&block) else {
+            continue;
+        };
+        let Some((header, hunks)) = patch::split_diff(&block) else {
+            continue;
+        };
         for hunk in hunks {
             let lines = changed_lines(&hunk);
             if lines.is_empty() {
@@ -191,9 +194,7 @@ pub fn run(root: &Path, may_take: &dyn Fn(&str) -> bool) -> Result<Vec<String>, 
     }
     let (groups, skipped) = plan(root, &staged, may_take);
     if groups.is_empty() {
-        return Err(
-            "no change belongs to a commit that is still yours to change".into()
-        );
+        return Err("no change belongs to a commit that is still yours to change".into());
     }
 
     // Start from a clean index. The work tree keeps every change, thus
@@ -240,14 +241,18 @@ pub fn run(root: &Path, may_take: &dyn Fn(&str) -> bool) -> Result<Vec<String>, 
         .map_err(|e| e.to_string())?;
     if !out.status.success() {
         notes.insert(0, "the fixup commits are there, but the rebase stopped".into());
-        notes.push(String::from_utf8_lossy(&out.stderr).lines().take(3).collect::<Vec<_>>().join(" "));
+        notes.push(
+            String::from_utf8_lossy(&out.stderr).lines().take(3).collect::<Vec<_>>().join(" "),
+        );
         return Err(notes.join("; "));
     }
 
     let total: usize = groups.iter().map(|g| g.hunks).sum();
     let mut summary = vec![format!("{total} changes went back into {made} commits")];
     if skipped > 0 {
-        summary.push(format!("{skipped} changes stayed, because no commit of yours holds those lines"));
+        summary.push(format!(
+            "{skipped} changes stayed, because no commit of yours holds those lines"
+        ));
     }
     summary.extend(notes);
     Ok(summary)

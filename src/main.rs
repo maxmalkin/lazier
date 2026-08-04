@@ -5,7 +5,6 @@ mod keys;
 mod tree;
 mod ui;
 
-
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     // Git calls this program as the sequence editor of an interactive

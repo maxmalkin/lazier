@@ -1,8 +1,8 @@
 use anyhow::Result;
 use ratatui::DefaultTerminal;
+use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use ratatui::crossterm::event::{KeyCode, KeyEventKind};
 use ratatui::crossterm::execute;
-use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
@@ -83,7 +83,10 @@ pub struct LogEntry {
 }
 
 pub enum ConfirmAction {
-    DeleteBranch { name: String, force: bool },
+    DeleteBranch {
+        name: String,
+        force: bool,
+    },
     DropStash(usize),
     Merge(String),
     Revert(String),
@@ -105,8 +108,15 @@ pub enum ConfirmAction {
 
 pub enum Mode {
     Normal,
-    Input { prompt: &'static str, buffer: String, purpose: InputPurpose },
-    Confirm { prompt: String, action: ConfirmAction },
+    Input {
+        prompt: &'static str,
+        buffer: String,
+        purpose: InputPurpose,
+    },
+    Confirm {
+        prompt: String,
+        action: ConfirmAction,
+    },
     /// The hunk view of one file. `cursor` is the hunk in view. `line` is
     /// the body line in that hunk. `picked` holds the marked body lines.
     Hunks {
@@ -119,31 +129,73 @@ pub enum Mode {
     },
     Help,
     /// The worktree list. It opens over the panels.
-    Worktrees { list: Vec<WorktreeEntry>, cursor: usize },
+    Worktrees {
+        list: Vec<WorktreeEntry>,
+        cursor: usize,
+    },
     /// The window that makes a worktree. It asks for a branch and a path.
     /// The path follows the branch name until the user edits the path.
-    NewWorktree { branch: String, path: String, on_path: bool, path_edited: bool },
+    NewWorktree {
+        branch: String,
+        path: String,
+        on_path: bool,
+        path_edited: bool,
+    },
     /// The window that adds a path to the ignore rules.
-    Ignore { pattern: String, tracked: bool },
+    Ignore {
+        pattern: String,
+        tracked: bool,
+    },
     /// The window that moves HEAD to another commit.
-    Reset { target: String, subject: String },
+    Reset {
+        target: String,
+        subject: String,
+    },
     /// The list of recent positions of HEAD.
-    Reflog { list: Vec<ReflogEntry>, cursor: usize },
+    Reflog {
+        list: Vec<ReflogEntry>,
+        cursor: usize,
+    },
     /// A command failed. The window makes sure the user sees it, because
     /// the command log can be closed.
-    Error { cmd: String, output: Vec<String> },
+    Error {
+        cmd: String,
+        output: Vec<String>,
+    },
     /// Who last changed each line of a file.
-    Blame { path: String, lines: Vec<BlameLine>, cursor: usize },
+    Blame {
+        path: String,
+        lines: Vec<BlameLine>,
+        cursor: usize,
+    },
     /// The window that chooses what goes into a stash.
-    Stash { path: Option<String> },
+    Stash {
+        path: Option<String>,
+    },
     /// The submodules and their state.
-    Submodules { list: Vec<SubmoduleEntry>, cursor: usize },
+    Submodules {
+        list: Vec<SubmoduleEntry>,
+        cursor: usize,
+    },
     /// The commit message window. It has a summary line and a body.
-    CommitMsg { summary: String, body: String, on_body: bool, purpose: CommitPurpose },
+    CommitMsg {
+        summary: String,
+        body: String,
+        on_body: bool,
+        purpose: CommitPurpose,
+    },
     /// The todo list editor of an interactive rebase. `base` is the commit
     /// that the rebase starts from. None means the rebase starts at the root.
-    Rebase { items: Vec<TodoItem>, cursor: usize, base: Option<String> },
+    Rebase {
+        items: Vec<TodoItem>,
+        cursor: usize,
+        base: Option<String>,
+    },
 }
+
+/// A git command to run with the terminal, and the environment it needs.
+/// The arguments come first, then a name and a value for each variable.
+type Suspend = (Vec<String>, Vec<(String, String)>);
 
 pub struct App {
     /// Focus 0 to 4 is a left panel. Focus 5 is the diff pane.
@@ -177,7 +229,7 @@ pub struct App {
     log_inflight: bool,
     diff_seq: u64,
     diff_target: Option<DiffTarget>,
-    pending_suspend: Option<(Vec<String>, Vec<(String, String)>)>,
+    pending_suspend: Option<Suspend>,
     /// A program and a file to open in it, outside the interface.
     pending_open: Option<(String, String)>,
     /// The commit that a fixup goes into. The rebase waits for the fixup
@@ -478,7 +530,9 @@ impl App {
                             prompt: format!(
                                 "hard reset to {target}? it throws away every change that has no commit."
                             ),
-                            action: ConfirmAction::RunAll(vec![svec(&["reset", "--hard", &target])]),
+                            action: ConfirmAction::RunAll(vec![svec(&[
+                                "reset", "--hard", &target,
+                            ])]),
                         };
                     }
                     _ => self.mode = Mode::Normal,
@@ -594,7 +648,11 @@ impl App {
                 KeyCode::Down if !*on_body => *on_body = true,
                 KeyCode::Up if *on_body => *on_body = false,
                 KeyCode::Backspace => {
-                    if *on_body { body.pop() } else { summary.pop() };
+                    if *on_body {
+                        body.pop()
+                    } else {
+                        summary.pop()
+                    };
                 }
                 // The enter key makes a new line in the body. In the summary
                 // line it sends the commit.
@@ -608,7 +666,11 @@ impl App {
                     self.submit_commit(summary, body, purpose);
                 }
                 KeyCode::Char(c) => {
-                    if *on_body { body.push(c) } else { summary.push(c) }
+                    if *on_body {
+                        body.push(c)
+                    } else {
+                        summary.push(c)
+                    }
                 }
                 _ => {}
             },
@@ -652,7 +714,9 @@ impl App {
                 }
                 KeyCode::Char(c) => buffer.push(c),
                 KeyCode::Enter => {
-                    let Mode::Input { buffer, purpose, .. } = std::mem::replace(&mut self.mode, Mode::Normal) else {
+                    let Mode::Input { buffer, purpose, .. } =
+                        std::mem::replace(&mut self.mode, Mode::Normal)
+                    else {
                         return;
                     };
                     self.submit_input(purpose, buffer);
@@ -661,7 +725,9 @@ impl App {
             },
             Mode::Confirm { .. } => match key.code {
                 KeyCode::Char('y') => {
-                    let Mode::Confirm { action, .. } = std::mem::replace(&mut self.mode, Mode::Normal) else {
+                    let Mode::Confirm { action, .. } =
+                        std::mem::replace(&mut self.mode, Mode::Normal)
+                    else {
                         return;
                     };
                     match action {
@@ -713,12 +779,12 @@ impl App {
                         ConfirmAction::DeleteBranch { name, force } => {
                             svec(&["branch", if force { "-D" } else { "-d" }, &name])
                         }
-                        ConfirmAction::DropStash(i) => svec(&["stash", "drop", &format!("stash@{{{i}}}")]),
+                        ConfirmAction::DropStash(i) => {
+                            svec(&["stash", "drop", &format!("stash@{{{i}}}")])
+                        }
                         ConfirmAction::Merge(name) => svec(&["merge", "--no-edit", &name]),
                         ConfirmAction::Revert(id) => svec(&["revert", "--no-edit", &id]),
-                        ConfirmAction::RemoveWorktree(path) => {
-                            svec(&["worktree", "remove", &path])
-                        }
+                        ConfirmAction::RemoveWorktree(path) => svec(&["worktree", "remove", &path]),
                         ConfirmAction::RunAll(_)
                         | ConfirmAction::GoToWorktree(_)
                         | ConfirmAction::Fixup(_)
@@ -864,7 +930,9 @@ impl App {
                     self.message_ok = false;
                     return;
                 }
-                let Some((mut items, base)) = self.rebase_slice(index) else { return };
+                let Some((mut items, base)) = self.rebase_slice(index) else {
+                    return;
+                };
                 // The target is the oldest commit in the list.
                 items[index].action = TodoAction::Reword;
                 let editor = self.seq_editor_cmd(&msg_path);
@@ -876,7 +944,9 @@ impl App {
     /// The path that the branch name suggests. It sits beside the root of
     /// the repository, thus the directories stay together.
     pub fn suggested_worktree_path(&self, branch: &str) -> String {
-        let Some(git) = &self.git else { return String::new() };
+        let Some(git) = &self.git else {
+            return String::new();
+        };
         if branch.is_empty() {
             return String::new();
         }
@@ -1142,7 +1212,8 @@ impl App {
         let row = self.selected_row()?;
         if let Some(dir) = &row.dir {
             let path = if dir.is_empty() { ".".to_string() } else { dir.clone() };
-            let label = if dir.is_empty() { "the whole work tree".into() } else { format!("{dir}/") };
+            let label =
+                if dir.is_empty() { "the whole work tree".into() } else { format!("{dir}/") };
             // A directory can hold both kinds of file.
             return Some((path, false, label));
         }
@@ -1238,7 +1309,9 @@ impl App {
                     // Changes are there, but none of them are staged yet.
                     (false, false) => {
                         self.mode = Mode::Confirm {
-                            prompt: "nothing is staged. stage every change, new files too, and commit?".into(),
+                            prompt:
+                                "nothing is staged. stage every change, new files too, and commit?"
+                                    .into(),
                             action: ConfirmAction::StageAllThenCommit,
                         };
                     }
@@ -1259,7 +1332,9 @@ impl App {
                     self.rebuild_tree();
                     return;
                 }
-                let Some(f) = self.selected_file() else { return };
+                let Some(f) = self.selected_file() else {
+                    return;
+                };
                 // A file that git does not track has no hunks to stage.
                 if f.work == '?' {
                     self.message = "stage the whole file first".into();
@@ -1268,8 +1343,7 @@ impl App {
                 }
                 // The diff pane must already show this file. The diff text
                 // is index-to-worktree, thus the hunks fit `apply --cached`.
-                let want =
-                    DiffTarget::WorktreeFile { path: f.path.clone(), untracked: false };
+                let want = DiffTarget::WorktreeFile { path: f.path.clone(), untracked: false };
                 if self.diff_target.as_ref() != Some(&want) {
                     return;
                 }
@@ -1290,7 +1364,9 @@ impl App {
             // Discard removes work that has no commit. It always asks first.
             Action::DiscardChanges => {
                 let (targets, label) = if self.marked.is_empty() {
-                    let Some((t, _, l)) = self.file_target() else { return };
+                    let Some((t, _, l)) = self.file_target() else {
+                        return;
+                    };
                     (vec![t], l)
                 } else {
                     (self.action_paths(), self.action_label())
@@ -1309,7 +1385,9 @@ impl App {
             }
             Action::DeleteFile => {
                 let (targets, label) = if self.marked.is_empty() {
-                    let Some((t, _, l)) = self.file_target() else { return };
+                    let Some((t, _, l)) = self.file_target() else {
+                        return;
+                    };
                     (vec![t], l)
                 } else {
                     (self.action_paths(), self.action_label())
@@ -1336,7 +1414,9 @@ impl App {
             // Mark or unmark the file under the cursor, so the next action
             // works on several files at once.
             Action::ToggleMark => {
-                let Some(row) = self.selected_row() else { return };
+                let Some(row) = self.selected_row() else {
+                    return;
+                };
                 match &row.dir {
                     // A directory row marks every file under it, or drops
                     // the marks when they are all there already.
@@ -1357,7 +1437,9 @@ impl App {
                         }
                     }
                     None => {
-                        let Some(f) = self.selected_file() else { return };
+                        let Some(f) = self.selected_file() else {
+                            return;
+                        };
                         let path = f.path.clone();
                         if !self.marked.remove(&path) {
                             self.marked.insert(path);
@@ -1377,20 +1459,28 @@ impl App {
                 if !self.marked.is_empty() {
                     let paths = self.action_paths();
                     self.mode = Mode::Ignore {
-                        pattern: paths.iter().map(|p| format!("/{p}")).collect::<Vec<_>>().join("\n"),
+                        pattern: paths
+                            .iter()
+                            .map(|p| format!("/{p}"))
+                            .collect::<Vec<_>>()
+                            .join("\n"),
                         tracked: false,
                     };
                     self.marked.clear();
                     return;
                 }
-                let Some(row) = self.selected_row() else { return };
+                let Some(row) = self.selected_row() else {
+                    return;
+                };
                 // A directory rule ends with a slash, thus git takes the
                 // whole directory. The root has no useful rule.
                 let (pattern, tracked) = match &row.dir {
                     Some(d) if d.is_empty() => return,
                     Some(d) => (format!("/{d}/"), false),
                     None => {
-                        let Some(f) = self.selected_file() else { return };
+                        let Some(f) = self.selected_file() else {
+                            return;
+                        };
                         (format!("/{}", f.path), f.work != '?')
                     }
                 };
@@ -1461,7 +1551,9 @@ impl App {
                 };
             }
             Action::BlameFile => {
-                let Some(f) = self.selected_file() else { return };
+                let Some(f) = self.selected_file() else {
+                    return;
+                };
                 if f.work == '?' {
                     self.message = "git does not track this file yet".into();
                     self.message_ok = false;
@@ -1480,7 +1572,9 @@ impl App {
             // Mark a commit, then move to another one to see what lies
             // between them. The same key on the marked commit clears it.
             Action::MarkForCompare => {
-                let Some(c) = self.repo.commits.get(self.selected[3]) else { return };
+                let Some(c) = self.repo.commits.get(self.selected[3]) else {
+                    return;
+                };
                 let id = c.id_str().to_string();
                 self.repo.compare = match &self.repo.compare {
                     Some(old) if *old == id => None,
@@ -1508,7 +1602,9 @@ impl App {
             // Make a commit that git can fold into an older one, then fold
             // it. Git makes the todo list itself, thus no editor is needed.
             Action::FixupInto => {
-                let Some(c) = self.repo.commits.get(self.selected[3]) else { return };
+                let Some(c) = self.repo.commits.get(self.selected[3]) else {
+                    return;
+                };
                 let id = c.id_str().to_string();
                 let subject = c.subject.to_string();
                 self.mode = Mode::Confirm {
@@ -1517,7 +1613,9 @@ impl App {
                 };
             }
             Action::OpenInEditor => {
-                let Some(f) = self.selected_file() else { return };
+                let Some(f) = self.selected_file() else {
+                    return;
+                };
                 let path = f.path.clone();
                 let Some(git) = &self.git else { return };
                 self.pending_open = Some((crate::git::editor(&git.root), path));
@@ -1550,7 +1648,9 @@ impl App {
             }
 
             Action::Checkout => {
-                let Some(b) = self.repo.branches.get(self.selected[2]) else { return };
+                let Some(b) = self.repo.branches.get(self.selected[2]) else {
+                    return;
+                };
                 // A remote branch needs a local one that follows it.
                 if b.remote {
                     let name = b.name.clone();
@@ -1568,10 +1668,16 @@ impl App {
                 self.write(svec(&["checkout", &name]));
             }
             Action::NewBranchPrompt => {
-                self.mode = Mode::Input { prompt: "new branch name", buffer: String::new(), purpose: InputPurpose::NewBranch };
+                self.mode = Mode::Input {
+                    prompt: "new branch name",
+                    buffer: String::new(),
+                    purpose: InputPurpose::NewBranch,
+                };
             }
             Action::DeleteBranch { force } => {
-                let Some(b) = self.repo.branches.get(self.selected[2]) else { return };
+                let Some(b) = self.repo.branches.get(self.selected[2]) else {
+                    return;
+                };
                 if b.current {
                     self.message = "cannot delete the branch you are on".into();
                     self.message_ok = false;
@@ -1594,7 +1700,9 @@ impl App {
             }
             // Put the commits of the current branch on top of another one.
             Action::RebaseOnto => {
-                let Some(b) = self.repo.branches.get(self.selected[2]) else { return };
+                let Some(b) = self.repo.branches.get(self.selected[2]) else {
+                    return;
+                };
                 if b.current {
                     self.message = "that is the branch you are on".into();
                     self.message_ok = false;
@@ -1608,7 +1716,9 @@ impl App {
                 };
             }
             Action::MergeBranch => {
-                let Some(b) = self.repo.branches.get(self.selected[2]) else { return };
+                let Some(b) = self.repo.branches.get(self.selected[2]) else {
+                    return;
+                };
                 if b.current {
                     self.message = "cannot merge a branch into itself".into();
                     self.message_ok = false;
@@ -1676,10 +1786,14 @@ impl App {
             Action::InteractiveRebase => self.start_rebase(),
             // Open one commit so its changes can go into several commits.
             Action::SplitCommit => {
-                let Some(c) = self.repo.commits.get(self.selected[3]) else { return };
+                let Some(c) = self.repo.commits.get(self.selected[3]) else {
+                    return;
+                };
                 let (id, subject) = (c.id_str().to_string(), c.subject.to_string());
                 self.mode = Mode::Confirm {
-                    prompt: format!("open {id} \"{subject}\" so you can make several commits from it?"),
+                    prompt: format!(
+                        "open {id} \"{subject}\" so you can make several commits from it?"
+                    ),
                     action: ConfirmAction::Split(self.selected[3]),
                 };
             }
@@ -1769,9 +1883,7 @@ impl App {
                 }
                 // A checkout fails when another worktree holds the branch.
                 // Offer to go to that worktree instead.
-                if !ok
-                    && let Some(path) = worktree_in_use(&output)
-                {
+                if !ok && let Some(path) = worktree_in_use(&output) {
                     self.mode = Mode::Confirm {
                         prompt: format!("that branch is checked out at {path}. go there?"),
                         action: ConfirmAction::GoToWorktree(path),
@@ -1825,9 +1937,7 @@ impl App {
                 self.log_cmd(ok, cmd, ms, output);
                 if ok {
                     self.refresh(files);
-                    if was_worktree
-                        && let Some(git) = &self.git
-                    {
+                    if was_worktree && let Some(git) = &self.git {
                         git.send(Req::Worktrees);
                     }
                 }
@@ -1942,13 +2052,16 @@ impl App {
             }),
             // A stash shows its own changes, thus you can look before you
             // put them back.
-            4 => (self.selected[4] < self.repo.stashes.len()).then(|| DiffTarget::Stash(self.selected[4])),
+            4 => (self.selected[4] < self.repo.stashes.len())
+                .then(|| DiffTarget::Stash(self.selected[4])),
             _ => None,
         };
-        if target.is_some() && target != self.diff_target {
+        if let Some(want) = target
+            && Some(&want) != self.diff_target.as_ref()
+        {
             self.diff_seq += 1;
-            self.diff_target = target.clone();
-            git.send(Req::Diff { seq: self.diff_seq, target: target.unwrap() });
+            self.diff_target = Some(want.clone());
+            git.send(Req::Diff { seq: self.diff_seq, target: want });
         }
     }
 }
@@ -2020,24 +2133,28 @@ mod tests {
         let mut app = App::new();
         app.repo.head = Some("main".into());
         app.repo.ahead = 2;
-        app.repo.files = [('M', 'M', "src/main.rs"), (' ', 'A', "src/app.rs"), (' ', '?', "notes.txt")]
-            .into_iter()
-            .map(|(index, work, path)| FileEntry { index, work, path: path.into() })
-            .collect();
-        app.repo.unpushed = ["0a0c000".to_string(), "0a0c001".to_string()].into();
-        app.repo.branches =
-            [("main", true, 2, 0, "2h"), ("feature/ui", false, 1, 3, "1d"), ("old/thing", false, 0, 0, "3w")]
+        app.repo.files =
+            [('M', 'M', "src/main.rs"), (' ', 'A', "src/app.rs"), (' ', '?', "notes.txt")]
                 .into_iter()
-                .map(|(name, current, ahead, behind, age)| BranchEntry {
-                    name: name.into(),
-                    current,
-                    ahead,
-                    behind,
-                    gone: false,
-                    remote: false,
-                    age: age.into(),
-                })
+                .map(|(index, work, path)| FileEntry { index, work, path: path.into() })
                 .collect();
+        app.repo.unpushed = ["0a0c000".to_string(), "0a0c001".to_string()].into();
+        app.repo.branches = [
+            ("main", true, 2, 0, "2h"),
+            ("feature/ui", false, 1, 3, "1d"),
+            ("old/thing", false, 0, 0, "3w"),
+        ]
+        .into_iter()
+        .map(|(name, current, ahead, behind, age)| BranchEntry {
+            name: name.into(),
+            current,
+            ahead,
+            behind,
+            gone: false,
+            remote: false,
+            age: age.into(),
+        })
+        .collect();
         app.repo.stashes = vec!["stash@{0}: WIP on main".into()];
         app.repo.commits = (0..100_000)
             .map(|i| {
@@ -2295,10 +2412,7 @@ mod tests {
             bisect_command(false, &Action::BisectBad, id),
             Some(svec(&["bisect", "start", "abc1234"]))
         );
-        assert_eq!(
-            bisect_command(true, &Action::BisectBad, None),
-            Some(svec(&["bisect", "bad"]))
-        );
+        assert_eq!(bisect_command(true, &Action::BisectBad, None), Some(svec(&["bisect", "bad"])));
         assert_eq!(
             bisect_command(true, &Action::BisectReset, None),
             Some(svec(&["bisect", "reset"]))
@@ -2340,7 +2454,12 @@ mod tests {
         let mut app = demo();
         app.area = ratatui::layout::Rect::new(0, 0, 80, 30);
         let p = ui::panes(app.area, app.show_log);
-        let wheel = |kind, y| MouseEvent { kind, column: p.left[2].x + 2, row: y, modifiers: KeyModifiers::NONE };
+        let wheel = |kind, y| MouseEvent {
+            kind,
+            column: p.left[2].x + 2,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        };
         app.handle_mouse(wheel(MouseEventKind::ScrollDown, p.left[2].y + 1));
         assert_eq!((app.focus, app.selected[2]), (2, 1));
         app.handle_mouse(wheel(MouseEventKind::ScrollUp, p.left[2].y + 1));
@@ -2438,7 +2557,8 @@ mod tests {
     #[test]
     fn reset_window() {
         let mut app = demo();
-        app.mode = Mode::Reset { target: "0a0c003".into(), subject: "fake: commit subject #3".into() };
+        app.mode =
+            Mode::Reset { target: "0a0c003".into(), subject: "fake: commit subject #3".into() };
         insta::assert_snapshot!(draw(&app, 100, 30).backend());
     }
 
@@ -2452,11 +2572,7 @@ mod tests {
                 ("9876543", "HEAD@{2}", "checkout: moving from main to feature/x"),
             ]
             .into_iter()
-            .map(|(id, at, what)| ReflogEntry {
-                id: id.into(),
-                at: at.into(),
-                what: what.into(),
-            })
+            .map(|(id, at, what)| ReflogEntry { id: id.into(), at: at.into(), what: what.into() })
             .collect(),
             cursor: 1,
         };
@@ -2609,8 +2725,7 @@ mod tests {
     fn confirm_window() {
         let mut app = demo();
         app.mode = Mode::Confirm {
-            prompt: "that branch is checked out at /Users/max/dbt/fs-warehouses. go there?"
-                .into(),
+            prompt: "that branch is checked out at /Users/max/dbt/fs-warehouses. go there?".into(),
             action: ConfirmAction::GoToWorktree("/Users/max/dbt/fs-warehouses".into()),
         };
         insta::assert_snapshot!(draw(&app, 100, 30).backend());
@@ -2649,10 +2764,7 @@ mod tests {
             output: vec!["fatal: The current branch main has no upstream branch".into()],
             ms: 5,
         });
-        assert!(
-            matches!(&app.mode, Mode::Confirm { .. }),
-            "the upstream offer must come first"
-        );
+        assert!(matches!(&app.mode, Mode::Confirm { .. }), "the upstream offer must come first");
     }
 
     // A failure of a command that runs in the background must not take a

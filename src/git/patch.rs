@@ -46,7 +46,8 @@ pub fn subset_hunk(hunk: &str, selected: &[usize]) -> Option<String> {
     let (mut old_count, mut new_count) = (0u32, 0u32);
     for (i, line) in lines.enumerate() {
         let take = selected.contains(&i);
-        let (kind, rest) = line.split_at(line.char_indices().next().map_or(0, |(_, c)| c.len_utf8()).min(line.len()));
+        let (kind, rest) = line
+            .split_at(line.char_indices().next().map_or(0, |(_, c)| c.len_utf8()).min(line.len()));
         match (kind, take) {
             // Git marks a missing end-of-line with a backslash. Keep it.
             ("\\", _) => {
@@ -79,7 +80,12 @@ pub fn subset_hunk(hunk: &str, selected: &[usize]) -> Option<String> {
         body.push('\n');
     }
     // A hunk with no change does nothing.
-    if old_count == new_count && !body.contains("\n+") && !body.starts_with('+') && !body.contains("\n-") && !body.starts_with('-') {
+    if old_count == new_count
+        && !body.contains("\n+")
+        && !body.starts_with('+')
+        && !body.contains("\n-")
+        && !body.starts_with('-')
+    {
         return None;
     }
     Some(format!("@@ -{old_start},{old_count} +{new_start},{new_count} @@\n{body}"))
@@ -182,7 +188,10 @@ mod tests {
         assert!(!staged.contains("+line 4 CHANGED"), "line 4 must stay out:\n{staged}");
         // The other two changes are still in the work tree.
         let rest = git(&dir, &["diff", "--", "f.txt"]);
-        assert!(rest.contains("+line 2 CHANGED") && rest.contains("+line 4 CHANGED"), "rest:\n{rest}");
+        assert!(
+            rest.contains("+line 2 CHANGED") && rest.contains("+line 4 CHANGED"),
+            "rest:\n{rest}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

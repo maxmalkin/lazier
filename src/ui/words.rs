@@ -92,7 +92,10 @@ mod tests {
 
     #[test]
     fn finds_a_change_at_the_start() {
-        assert_eq!(span("old_name.run()", "new_name.run()"), Some(("old_name".into(), "new_name".into())));
+        assert_eq!(
+            span("old_name.run()", "new_name.run()"),
+            Some(("old_name".into(), "new_name".into()))
+        );
     }
 
     #[test]
