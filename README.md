@@ -23,7 +23,7 @@ with less memory and less processor time, along with some new features.
 
 - stage by file, directory, hunk, or single line
 - commit, amend, reword, revert, cherry-pick, fixup
-- absorb: send each staged change back to the commit that wrote it
+- absorb: send each staged change back to the commit that wrote it †
 - split one commit into several
 - interactive rebase, and rebase onto another branch
 - bisect
@@ -33,10 +33,10 @@ with less memory and less processor time, along with some new features.
 - worktrees
 - submodules
 - reflog, to go back to where HEAD has been
-- blame
+- blame †
 - take ours or theirs in a conflict
 - commit graph, with a full-screen view
-- word-level diff
+- word-level diff †
 - file tree, with directories you can fold
 - mark several files, thus the next key works on each one
 - search the commit messages
@@ -46,6 +46,9 @@ with less memory and less processor time, along with some new features.
 - command log, with the result and the time of each command
 - run a command line through your shell
 - mouse and keyboard
+
+† lazygit has no key for this. For absorb, lazygit can find the base commit
+of your changes, but you then make the fixup and squash it yourself.
 
 ## Speed and memory
 
