@@ -1519,10 +1519,8 @@ impl App {
             Action::OpenInEditor => {
                 let Some(f) = self.selected_file() else { return };
                 let path = f.path.clone();
-                let editor = std::env::var("VISUAL")
-                    .or_else(|_| std::env::var("EDITOR"))
-                    .unwrap_or_else(|_| "vi".into());
-                self.pending_open = Some((editor, path));
+                let Some(git) = &self.git else { return };
+                self.pending_open = Some((crate::git::editor(&git.root), path));
             }
             Action::SearchPrompt => {
                 self.mode = Mode::Input {

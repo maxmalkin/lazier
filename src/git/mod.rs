@@ -484,6 +484,53 @@ pub fn is_network(args: &[String]) -> bool {
     matches!(args.first().map(String::as_str), Some("push" | "pull" | "fetch"))
 }
 
+/// Editors to try when git names one that is not on this machine. The
+/// first ones are the easiest to leave.
+const FALLBACK_EDITORS: &[&str] =
+    &["nano", "micro", "hx", "helix", "nvim", "vim", "vi", "notepad"];
+
+#[cfg(windows)]
+const EXE_SUFFIXES: &[&str] = &["", ".exe", ".cmd", ".bat"];
+#[cfg(not(windows))]
+const EXE_SUFFIXES: &[&str] = &[""];
+
+/// The editor to open a file with. Git already knows the answer: it reads
+/// GIT_EDITOR, then core.editor, then VISUAL, then EDITOR. Ask git, thus
+/// one setting controls this program and your other git commands. Git can
+/// still name an editor that is not here, thus make sure of it first.
+pub fn editor(root: &PathBuf) -> String {
+    let named = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["var", "GIT_EDITOR"])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .unwrap_or_default();
+    if on_path(&named) {
+        return named;
+    }
+    FALLBACK_EDITORS.iter().find(|name| on_path(name)).unwrap_or(&"vi").to_string()
+}
+
+/// True when the first word of a command line names a program you can run.
+/// The word can carry flags after it, thus only the first word counts.
+fn on_path(cmd: &str) -> bool {
+    let program = cmd.split_whitespace().next().unwrap_or_default().trim_matches('"');
+    if program.is_empty() {
+        return false;
+    }
+    // A name with a directory in it points at the file, not at the PATH.
+    if program.contains('/') || program.contains('\\') {
+        return std::path::Path::new(program).is_file();
+    }
+    let Some(path) = std::env::var_os("PATH") else { return false };
+    std::env::split_paths(&path).any(|dir| {
+        EXE_SUFFIXES.iter().any(|end| dir.join(format!("{program}{end}")).is_file())
+    })
+}
+
 /// The number of output lines that the command log keeps.
 const LOG_LINES: usize = 6;
 
@@ -840,5 +887,31 @@ fn display_diff(root: &PathBuf, target: &DiffTarget) -> (String, String) {
             run(&["stash", "show", "--stat", "--patch", &format!("stash@{{{i}}}")]),
             String::new(),
         ),
+    }
+}
+
+#[cfg(test)]
+mod editor_tests {
+    use super::on_path;
+
+    #[test]
+    fn finds_a_program_that_is_there() {
+        let real = if cfg!(windows) { "cmd" } else { "sh" };
+        assert!(on_path(real));
+        // Flags after the name must not hide the program.
+        assert!(on_path(&format!("{real} --wait")));
+    }
+
+    #[test]
+    fn rejects_a_program_that_is_not_there() {
+        assert!(!on_path("lazier-no-such-editor-9f3a"));
+        assert!(!on_path(""));
+        assert!(!on_path("   "));
+    }
+
+    #[test]
+    fn a_name_with_a_directory_must_be_a_file() {
+        assert!(!on_path("/lazier/no/such/editor"));
+        assert!(on_path(if cfg!(windows) { r"C:\Windows\System32\cmd.exe" } else { "/bin/sh" }));
     }
 }
