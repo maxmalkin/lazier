@@ -17,7 +17,7 @@ A fast terminal user interface for git. Rust, [ratatui](https://ratatui.rs),
 and [gitoxide](https://github.com/GitoxideLabs/gitoxide).
 
 It does the work of [lazygit](https://github.com/jesseduffield/lazygit)
-with less memory and less processor time, along with some new features.
+with less memory and less processor time, making it much quicker to work with in larger repos.
 
 ## Speed and memory
 
