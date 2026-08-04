@@ -125,6 +125,16 @@ pub fn action_for(key: KeyEvent, focus: usize) -> Option<Action> {
     }
 }
 
+/// True when the panel in focus gives this key a meaning of its own. The
+/// global meaning is then hidden, thus the hint bar must not offer it.
+pub fn panel_claims(focus: usize, key: &str) -> bool {
+    let mut chars = key.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) => panel_action(focus, KeyCode::Char(c)).is_some(),
+        _ => false,
+    }
+}
+
 fn panel_action(focus: usize, code: KeyCode) -> Option<Action> {
     match (focus, code) {
         (1, KeyCode::Char(' ')) => Some(Action::ToggleStage),

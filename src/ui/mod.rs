@@ -108,6 +108,45 @@ fn centered(area: Rect, w: u16, h: u16) -> Rect {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // No key may appear twice in the bar, and a key the panel uses for
+    // something else must not be offered with its global meaning.
+    #[test]
+    fn the_hint_bar_never_repeats_or_lies() {
+        for focus in 0..6 {
+            let panel = HINTS[focus];
+            let globals = globals_for(focus, panel);
+            let mut keys: Vec<&str> = panel.iter().map(|(k, _)| *k).collect();
+            keys.extend(globals.iter().map(|(k, _)| *k));
+            let mut seen = std::collections::HashSet::new();
+            for k in &keys {
+                assert!(seen.insert(*k), "panel {focus} shows {k} twice");
+            }
+            for (k, _) in &globals {
+                assert!(
+                    !crate::keys::panel_claims(focus, k),
+                    "panel {focus} offers {k} but uses it for something else"
+                );
+            }
+        }
+    }
+
+    // The two that the panels take over: fixup on the commits panel and
+    // pop on the stash panel.
+    #[test]
+    fn a_panel_key_hides_the_global_one() {
+        let commits = globals_for(3, HINTS[3]);
+        assert!(!commits.iter().any(|(k, _)| *k == "f"), "f is fixup there");
+        assert!(commits.iter().any(|(k, _)| *k == "P"), "push still works");
+        let stash = globals_for(4, HINTS[4]);
+        assert!(!stash.iter().any(|(k, _)| *k == "p"), "p is pop there");
+        assert!(stash.iter().any(|(k, _)| *k == "f"), "fetch still works");
+    }
+}
+
 /// The window that shows a command that failed. The command log can be
 /// closed, thus a failure needs a window of its own.
 fn render_error(frame: &mut Frame, body: Rect, cmd: &str, output: &[String]) {
@@ -445,7 +484,6 @@ const HINTS: [Hints; 6] = [
         ("d/D", "Delete"),
         ("R", "Rename"),
         ("m", "Merge"),
-        ("P/p/f", "Push/pull/fetch"),
     ],
     &[
         ("<enter>", "Graph"),
@@ -461,13 +499,30 @@ const HINTS: [Hints; 6] = [
     &[("<enter>", "Apply"), ("p", "Pop"), ("d", "Drop")],
     &[("j/k", "Scroll"), ("g/G", "Top/bottom")],
 ];
+// One entry for each key, thus a key the panel takes for itself can be
+// left out on its own.
 const GLOBAL_HINTS: Hints = &[
-    ("P/p/f", "Push/pull/fetch"),
+    ("P", "Push"),
+    ("p", "Pull"),
+    ("f", "Fetch"),
     ("/", "Search"),
     (":", "Shell"),
     ("?", "Keys"),
     ("q", "Quit"),
 ];
+
+/// The global hints that still apply in this panel. A key that the panel
+/// uses for something else is left out, because offering it would be a
+/// lie, and a key the panel already lists would show twice.
+fn globals_for(focus: usize, panel: Hints) -> Vec<(&'static str, &'static str)> {
+    GLOBAL_HINTS
+        .iter()
+        .filter(|(key, _)| {
+            !crate::keys::panel_claims(focus, key) && !panel.iter().any(|(k, _)| k == key)
+        })
+        .copied()
+        .collect()
+}
 
 // Make one line of "Desc: key | Desc: key", the shape lazygit uses.
 fn hint_line(groups: &[Hints]) -> Line<'static> {
@@ -477,25 +532,28 @@ fn hint_line(groups: &[Hints]) -> Line<'static> {
 /// The same line, but it stops before it goes past `width`. A hint that
 /// does not fit stays out, thus the bar never runs off the screen.
 fn hint_line_width(groups: &[Hints], width: usize) -> Line<'static> {
+    let flat: Vec<(&str, &str)> = groups.iter().flat_map(|g| g.iter().copied()).collect();
+    hint_items(&flat, width)
+}
+
+fn hint_items(items: &[(&str, &str)], width: usize) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut used = 0usize;
     let mut dropped = false;
-    for group in groups {
-        for (key, desc) in group.iter() {
-            let sep = if spans.is_empty() { 0 } else { 3 };
-            let need = sep + desc.len() + 2 + key.len();
-            // Keep one column free for the mark that says "there is more".
-            if used + need > width.saturating_sub(2) {
-                dropped = true;
-                break;
-            }
-            if sep > 0 {
-                spans.push(Span::styled(" | ", DIM));
-            }
-            spans.push(Span::styled(format!("{desc}: "), DESC));
-            spans.push(Span::styled((*key).to_string(), KEY));
-            used += need;
+    for (key, desc) in items.iter() {
+        let sep = if spans.is_empty() { 0 } else { 3 };
+        let need = sep + desc.len() + 2 + key.len();
+        // Keep one column free for the mark that says "there is more".
+        if used + need > width.saturating_sub(2) {
+            dropped = true;
+            break;
         }
+        if sep > 0 {
+            spans.push(Span::styled(" | ", DIM));
+        }
+        spans.push(Span::styled(format!("{desc}: "), DESC));
+        spans.push(Span::styled((*key).to_string(), KEY));
+        used += need;
     }
     if dropped {
         spans.push(Span::styled(" …", DIM));
@@ -632,7 +690,12 @@ fn render_bar(frame: &mut Frame, area: Rect, app: &App) {
             spans.extend(hint_line_width(&[GLOBAL_HINTS], left).spans);
             Line::from(spans)
         }
-        Mode::Normal => hint_line_width(&[HINTS[app.focus.min(5)], GLOBAL_HINTS], w),
+        Mode::Normal => {
+            let panel = HINTS[app.focus.min(5)];
+            let mut items: Vec<(&str, &str)> = panel.to_vec();
+            items.extend(globals_for(app.focus.min(5), panel));
+            hint_items(&items, w)
+        }
     };
     frame.render_widget(line, area);
 }
