@@ -35,8 +35,7 @@ Less is better.
 | Program file | | 17 MB | **3.4 MB** | **~5x** |
 
 lazier uses less memory in every test and no processor time when you touch
-no key. lazygit starts more quickly on the kernel repository: it runs
-several `git` processes at once and pays for it in memory.
+no key.
 
 A file that changes outside the program needs no walk of the whole work
 tree. lazier watches the work tree and looks only at what changed, which on
