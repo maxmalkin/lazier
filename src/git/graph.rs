@@ -66,6 +66,9 @@ impl<T: PartialEq + Clone> Graph<T> {
         // Horizontal edges come first. The end glyphs overwrite them.
         for &target in joins.iter().chain(&merges).chain(&opened) {
             let (lo, hi) = (col.min(target), col.max(target));
+            // The position gives the glyph, thus the number must stay. An
+            // iterator here needs a skip and a take, which reads less well.
+            #[allow(clippy::needless_range_loop)]
             for pos in (2 * lo + 1)..(2 * hi) {
                 cells[pos] = if pos % 2 == 0 && cells[pos] == '│' {
                     '┼'

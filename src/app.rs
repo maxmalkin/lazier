@@ -1905,13 +1905,12 @@ impl App {
                 // editor only has to accept it.
                 if let Some(id) = self.pending_fixup.take()
                     && cmd.contains("--fixup=")
+                    && ok
                 {
-                    if ok {
-                        self.pending_suspend = Some((
-                            svec(&["rebase", "--autosquash", "--autostash", &format!("{id}^")]),
-                            vec![("GIT_SEQUENCE_EDITOR".into(), "true".into())],
-                        ));
-                    }
+                    self.pending_suspend = Some((
+                        svec(&["rebase", "--autosquash", "--autostash", &format!("{id}^")]),
+                        vec![("GIT_SEQUENCE_EDITOR".into(), "true".into())],
+                    ));
                 }
                 // The staging is done, thus the commit window can open.
                 if self.pending_commit_window && cmd.contains("add -A") {
