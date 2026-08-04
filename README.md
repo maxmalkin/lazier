@@ -30,7 +30,6 @@ Less is better.
 | Walk 300 files with diffs | processor | 1263 ms | **147 ms** | **~9x** |
 | Linux kernel, 1.3M commits | scroll 2000 commits | 2196 ms | **1346 ms** | **~1.6x** |
 | | peak RSS | 136 MB | **79 MB** | **~1.7x** |
-| | start | **823 ms** | 1293 ms | ~0.6x |
 | 5000-line diff | peak RSS | 27 MB | **10 MB** | **~2.7x** |
 | Idle | processor | 0.3 % | **0.0 %** | — |
 | Program file | | 17 MB | **3.4 MB** | **~5x** |
