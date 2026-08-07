@@ -589,13 +589,26 @@ fn on_path(cmd: &str) -> bool {
 }
 
 /// The number of output lines that the command log keeps.
-const LOG_LINES: usize = 6;
+const LOG_LINES: usize = 12;
 
 fn take_lines(out: &std::process::Output) -> Vec<String> {
     // Git writes progress to stderr, thus both streams matter.
     let text =
         format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-    text.lines().filter(|l| !l.trim().is_empty()).take(LOG_LINES).map(str::to_string).collect()
+    clean_lines(&text)
+}
+
+/// The lines of an output, ready for the command log. Git marks each line
+/// that comes from the server with "remote:". The mark costs width and
+/// says nothing, thus take it away. A line that is then empty says nothing
+/// at all, thus drop it and keep the row for a line that does.
+fn clean_lines(text: &str) -> Vec<String> {
+    text.lines()
+        .map(|l| l.strip_prefix("remote:").map_or(l, str::trim_start))
+        .filter(|l| !l.trim().is_empty())
+        .take(LOG_LINES)
+        .map(str::to_string)
+        .collect()
 }
 
 fn run_git(root: &PathBuf, args: &[String]) -> Resp {
@@ -973,5 +986,44 @@ mod editor_tests {
     fn a_name_with_a_directory_must_be_a_file() {
         assert!(!on_path("/lazier/no/such/editor"));
         assert!(on_path(if cfg!(windows) { r"C:\Windows\System32\cmd.exe" } else { "/bin/sh" }));
+    }
+}
+
+#[cfg(test)]
+mod log_tests {
+    use super::clean_lines;
+
+    /// The answer of a push carries the link that makes a pull request.
+    /// The link must survive, thus the log can show it.
+    #[test]
+    fn a_push_keeps_the_link_and_drops_the_marks() {
+        let out = "\
+remote:
+remote: Create a pull request for 'work' on GitHub by visiting:
+remote:      https://github.com/maxmalkin/lazier/pull/new/work
+remote:
+To https://github.com/maxmalkin/lazier.git
+ * [new branch]      work -> work
+";
+        assert_eq!(
+            clean_lines(out),
+            [
+                "Create a pull request for 'work' on GitHub by visiting:",
+                "https://github.com/maxmalkin/lazier/pull/new/work",
+                "To https://github.com/maxmalkin/lazier.git",
+                " * [new branch]      work -> work",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_line_that_is_not_from_the_server_keeps_its_shape() {
+        assert_eq!(clean_lines("error: it did not work\n"), ["error: it did not work"]);
+    }
+
+    #[test]
+    fn the_log_takes_only_the_first_lines() {
+        let many: String = (0..40).map(|i| format!("line {i}\n")).collect();
+        assert_eq!(clean_lines(&many).len(), super::LOG_LINES);
     }
 }

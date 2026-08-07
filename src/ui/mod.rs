@@ -37,9 +37,12 @@ pub fn panes(area: Rect, show_log: bool) -> Panes {
     ])
     .areas(left);
     if show_log {
-        // The diff takes most of the height. The log needs only a few rows.
+        // The diff takes most of the height. The log needs enough rows for
+        // the answer of a push, which can carry a link for you to follow.
+        // A small terminal keeps most of its height for the diff.
+        let rows = (main.height / 3).clamp(6, 12);
         let [diff, log] =
-            Layout::vertical([Constraint::Fill(1), Constraint::Length(6)]).areas(main);
+            Layout::vertical([Constraint::Fill(1), Constraint::Length(rows)]).areas(main);
         Panes { left, diff, log: Some(log) }
     } else {
         Panes { left, diff: main, log: None }
