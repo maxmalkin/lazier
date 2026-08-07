@@ -173,13 +173,18 @@ fn search(root: &std::path::Path, text: &str) -> Vec<CommitEntry> {
         .collect()
 }
 
-// Start a walk from HEAD, the newest commit first.
-fn start_walk(repo: &gix::Repository) -> Option<gix::revision::Walk<'_>> {
+/// Walk the history from HEAD, the newest commit first. `first_parent`
+/// follows only the first parent
+/// of each commit, thus a merge hides the branch that came into it and the
+/// list shows the main line alone.
+fn start_walk(repo: &gix::Repository, first_parent: bool) -> Option<gix::revision::Walk<'_>> {
     repo.head_id().ok().and_then(|id| {
-        id.ancestors()
-            .sorting(gix::revision::walk::Sorting::ByCommitTime(Default::default()))
-            .all()
-            .ok()
+        let mut walk =
+            id.ancestors().sorting(gix::revision::walk::Sorting::ByCommitTime(Default::default()));
+        if first_parent {
+            walk = walk.first_parent_only();
+        }
+        walk.all().ok()
     })
 }
 
@@ -197,7 +202,8 @@ pub fn log_thread(
     // same base objects again for each commit.
     repo.object_cache_size(Some(16 * 1024 * 1024));
     let mut head = repo.head_id().ok().map(|id| id.detach());
-    let mut walk = start_walk(&repo);
+    let mut first_parent = false;
+    let mut walk = start_walk(&repo, first_parent);
     let mut graph: super::graph::Graph<gix::ObjectId> = super::graph::Graph::new();
     // False until the first chunk goes out. The first refresh must fill the
     // panel, even though HEAD has not moved since the thread started.
@@ -219,7 +225,18 @@ pub fn log_thread(
                     continue;
                 }
                 // No filter any more: walk the history from HEAD again.
-                walk = start_walk(&repo);
+                walk = start_walk(&repo, first_parent);
+                graph = super::graph::Graph::new();
+                replace = true;
+                100
+            }
+            LogReq::FirstParent(on) => {
+                first_parent = on;
+                // A search does not follow parents, thus it does not change.
+                if filter.is_some() {
+                    continue;
+                }
+                walk = start_walk(&repo, first_parent);
                 graph = super::graph::Graph::new();
                 replace = true;
                 100
@@ -247,7 +264,7 @@ pub fn log_thread(
                 }
                 if now != head {
                     head = now;
-                    walk = start_walk(&repo);
+                    walk = start_walk(&repo, first_parent);
                     graph = super::graph::Graph::new();
                 }
                 replace = true;

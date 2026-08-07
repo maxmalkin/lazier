@@ -97,6 +97,9 @@ pub enum LogReq {
     /// Show only the commits whose message holds this text. None gives the
     /// whole history again.
     Filter(Option<String>),
+    /// Follow only the first parent of each commit, or every parent. The
+    /// walk starts again, thus the list shows the new shape at once.
+    FirstParent(bool),
 }
 
 pub enum Req {
@@ -113,6 +116,8 @@ pub enum Req {
         count: usize,
     },
     LogFilter(Option<String>),
+    /// Follow only the first parent of each commit, or every parent.
+    LogFirstParent(bool),
     Diff {
         seq: u64,
         target: DiffTarget,
@@ -290,6 +295,9 @@ impl Git {
             Req::LogRefresh { count } => {
                 let _ = self.log_tx.send(LogReq::Refresh(count));
             }
+            Req::LogFirstParent(on) => {
+                let _ = self.log_tx.send(LogReq::FirstParent(on));
+            }
             Req::LogFilter(text) => {
                 let _ = self.log_tx.send(LogReq::Filter(text));
             }
@@ -466,7 +474,10 @@ pub fn spawn(event_tx: Sender<Msg>) -> anyhow::Result<Git> {
                         .unwrap_or_default();
                     Some(Resp::Message { text, index })
                 }
-                Req::LogChunk { .. } | Req::LogRefresh { .. } | Req::LogFilter(_) => None,
+                Req::LogChunk { .. }
+                | Req::LogRefresh { .. }
+                | Req::LogFilter(_)
+                | Req::LogFirstParent(_) => None,
             };
             if let Some(resp) = resp
                 && event_tx.send(Msg::Git(resp)).is_err()

@@ -66,7 +66,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     }
     render_bar(frame, bar, app);
     match &app.mode {
-        Mode::Help => render_help(frame, body),
+        Mode::Help { scroll } => render_help(frame, body, *scroll),
         Mode::Confirm { prompt, .. } => render_confirm(frame, body, prompt),
         Mode::Worktrees { list, cursor } => {
             let h = (list.len() as u16 + 2).max(4);
@@ -464,6 +464,7 @@ const HINTS: [Hints; 6] = [
         ("t", "Tag"),
         ("c", "Copy id"),
         ("R", "Reset"),
+        ("m", "Main line"),
     ],
     &[("<enter>", "Apply"), ("p", "Pop"), ("d", "Drop")],
     &[("j/k", "Scroll"), ("g/G", "Top/bottom")],
@@ -567,7 +568,9 @@ fn render_bar(frame: &mut Frame, area: Rect, app: &App) {
             ("<enter>", "Run"),
             ("<esc>", "Cancel"),
         ]]),
-        Mode::Help => Line::styled("press any key to close the help", Style::new().fg(Color::Cyan)),
+        Mode::Help { .. } => {
+            Line::styled("scroll: j / k    close: any other key", Style::new().fg(Color::Cyan))
+        }
         Mode::Worktrees { .. } => hint_line(&[&[
             ("<enter>", "Go to it"),
             ("n", "New"),
@@ -750,6 +753,7 @@ const HELP: &[(&str, Hints)] = &[
         "Commits [4]",
         &[
             ("enter", "open the full graph view"),
+            ("m", "the main line alone, or the whole history again"),
             ("i", "start an interactive rebase here"),
             ("s", "open the commit, so it can become several commits"),
             ("w", "give the commit a new message"),
@@ -808,7 +812,15 @@ const HELP: &[(&str, Hints)] = &[
     ),
 ];
 
-fn render_help(frame: &mut Frame, body: Rect) {
+/// The number of rows that the key list holds. The scroll needs it, thus
+/// it cannot go past the end.
+pub fn help_rows() -> u16 {
+    // One row for each key, one for each title, one for each rule between.
+    let keys: usize = HELP.iter().map(|(_, rows)| rows.len()).sum();
+    (keys + HELP.len() * 2 - 1) as u16
+}
+
+fn render_help(frame: &mut Frame, body: Rect, scroll: u16) {
     let w = 64.min(body.width);
     let inner = w.saturating_sub(2) as usize;
     let mut lines: Vec<Line> = Vec::new();
@@ -834,18 +846,22 @@ fn render_help(frame: &mut Frame, body: Rect) {
         width: w,
         height: h,
     };
+    // The window shows only a part of the list, thus never scroll past the
+    // last row.
+    let seen = h.saturating_sub(2);
+    let scroll = scroll.min((lines.len() as u16).saturating_sub(seen));
+    let mut block = Block::bordered()
+        .title(Span::styled(" Keys ", Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)))
+        .border_style(Style::new().fg(Color::Cyan));
+    // Say where you are, but only when the list does not fit.
+    if (lines.len() as u16) > seen {
+        let end = (scroll + seen).min(lines.len() as u16);
+        block = block.title_bottom(
+            Line::styled(format!(" j/k  {end} of {} ", lines.len()), DIM).right_aligned(),
+        );
+    }
     frame.render_widget(Clear, area);
-    frame.render_widget(
-        Paragraph::new(lines).block(
-            Block::bordered()
-                .title(Span::styled(
-                    " Keys ",
-                    Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-                ))
-                .border_style(Style::new().fg(Color::Cyan)),
-        ),
-        area,
-    );
+    frame.render_widget(Paragraph::new(lines).block(block).scroll((scroll, 0)), area);
 }
 
 #[cfg(test)]

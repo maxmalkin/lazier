@@ -281,6 +281,9 @@ pub fn render_left(frame: &mut Frame, areas: [Rect; 5], app: &App) {
         let title = match (i, &repo.filter, &repo.compare) {
             (3, Some(text), _) => format!("[4]─Commits─search: {text}"),
             (3, _, Some(id)) => format!("[4]─Commits─from {id}"),
+            // Say which shape the list has, thus a missing branch is no
+            // surprise.
+            (3, _, _) if app.first_parent => "[4]─Commits─main line".to_string(),
             _ => format!("[{}]─{}", i + 1, PANELS[i]),
         };
         list::render(

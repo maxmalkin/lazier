@@ -1,7 +1,7 @@
 use anyhow::Result;
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
-use ratatui::crossterm::event::{KeyCode, KeyEventKind};
+use ratatui::crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -127,7 +127,10 @@ pub enum Mode {
         line: usize,
         picked: Vec<usize>,
     },
-    Help,
+    /// The key list. It is taller than most terminals, thus it scrolls.
+    Help {
+        scroll: u16,
+    },
     /// The worktree list. It opens over the panels.
     Worktrees {
         list: Vec<WorktreeEntry>,
@@ -217,6 +220,9 @@ pub struct App {
     pub marked: HashSet<String>,
     pub cmd_log: Vec<LogEntry>,
     pub show_log: bool,
+    /// True when the commit list follows only the first parent. A merge
+    /// then hides the branch that came into it.
+    pub first_parent: bool,
     /// The commands that run now. The bar shows them.
     pub running: Vec<String>,
     /// Counts up while a command runs. It moves the spinner.
@@ -269,6 +275,7 @@ impl App {
             marked: HashSet::new(),
             cmd_log: Vec::new(),
             show_log: true,
+            first_parent: false,
             running: Vec::new(),
             tick: 0,
             area: ratatui::layout::Rect::ZERO,
@@ -464,7 +471,27 @@ impl App {
                     self.apply(action);
                 }
             }
-            Mode::Help | Mode::Error { .. } => self.mode = Mode::Normal,
+            Mode::Help { scroll } => {
+                // The list is taller than the window, thus it must move.
+                // Only a key that closes it ends the mode.
+                let last = crate::ui::help_rows().saturating_sub(1);
+                match key.code {
+                    KeyCode::Char('j') | KeyCode::Down => *scroll = (*scroll + 1).min(last),
+                    KeyCode::Char('k') | KeyCode::Up => *scroll = scroll.saturating_sub(1),
+                    KeyCode::PageDown => *scroll = (*scroll + 10).min(last),
+                    KeyCode::PageUp => *scroll = scroll.saturating_sub(10),
+                    KeyCode::Char('g') | KeyCode::Home => *scroll = 0,
+                    KeyCode::Char('G') | KeyCode::End => *scroll = last,
+                    KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        *scroll = (*scroll + 10).min(last)
+                    }
+                    KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        *scroll = scroll.saturating_sub(10)
+                    }
+                    _ => self.mode = Mode::Normal,
+                }
+            }
+            Mode::Error { .. } => self.mode = Mode::Normal,
             Mode::Worktrees { list, cursor } => match key.code {
                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('W') => self.mode = Mode::Normal,
                 KeyCode::Char('j') | KeyCode::Down => {
@@ -1265,8 +1292,17 @@ impl App {
             }
             Action::DiffScroll(delta) => self.scroll_diff(delta as i16),
             Action::ZoomGraph => self.zoom = !self.zoom,
-            Action::Help => self.mode = Mode::Help,
+            Action::Help => self.mode = Mode::Help { scroll: 0 },
             Action::ToggleLog => self.show_log = !self.show_log,
+            Action::FirstParent => {
+                self.first_parent = !self.first_parent;
+                // The list starts again from the top, thus the cursor must
+                // not point past the end of the new list.
+                self.selected[3] = 0;
+                if let Some(git) = &self.git {
+                    git.send(Req::LogFirstParent(self.first_parent));
+                }
+            }
             Action::Refresh => self.refresh_all(),
 
             Action::ToggleStage => {
@@ -2896,7 +2932,7 @@ mod tests {
     #[test]
     fn help_overlay() {
         let mut app = demo();
-        app.mode = Mode::Help;
+        app.mode = Mode::Help { scroll: 0 };
         insta::assert_snapshot!(draw(&app, 100, 30).backend());
     }
 

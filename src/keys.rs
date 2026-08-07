@@ -14,6 +14,8 @@ pub enum Action {
     DiffScroll(i32),
     Refresh,
     ZoomGraph,
+    /// Change between the whole history and the main line alone.
+    FirstParent,
     Help,
     ToggleLog,
     InteractiveRebase,
@@ -60,7 +62,9 @@ pub enum Action {
     // Branches panel
     Checkout,
     NewBranchPrompt,
-    DeleteBranch { force: bool },
+    DeleteBranch {
+        force: bool,
+    },
     RenameBranchPrompt,
     MergeBranch,
     RebaseOnto,
@@ -161,6 +165,8 @@ fn panel_action(focus: usize, code: KeyCode) -> Option<Action> {
         (1, KeyCode::Char('o')) => Some(Action::TakeOurs),
         (1, KeyCode::Char('t')) => Some(Action::TakeTheirs),
         (3, KeyCode::Enter) => Some(Action::ZoomGraph),
+        // The m key changes to the main line and back again.
+        (3, KeyCode::Char('m')) => Some(Action::FirstParent),
         (3, KeyCode::Char('i')) => Some(Action::InteractiveRebase),
         (3, KeyCode::Char('w')) => Some(Action::RewordCommit),
         (3, KeyCode::Char('v')) => Some(Action::RevertCommit),
