@@ -66,7 +66,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     }
     render_bar(frame, bar, app);
     match &app.mode {
-        Mode::Help { scroll } => render_help(frame, body, *scroll),
+        Mode::Help { scroll } => render_help(frame, body, frame.area(), *scroll),
         Mode::Confirm { prompt, .. } => render_confirm(frame, body, prompt),
         Mode::Worktrees { list, cursor } => {
             let h = (list.len() as u16 + 2).max(4);
@@ -568,9 +568,10 @@ fn render_bar(frame: &mut Frame, area: Rect, app: &App) {
             ("<enter>", "Run"),
             ("<esc>", "Cancel"),
         ]]),
-        Mode::Help { .. } => {
-            Line::styled("scroll: j / k    close: any other key", Style::new().fg(Color::Cyan))
-        }
+        Mode::Help { .. } => Line::styled(
+            "scroll: j / k, arrows, wheel    close: any other key",
+            Style::new().fg(Color::Cyan),
+        ),
         Mode::Worktrees { .. } => hint_line(&[&[
             ("<enter>", "Go to it"),
             ("n", "New"),
@@ -812,17 +813,28 @@ const HELP: &[(&str, Hints)] = &[
     ),
 ];
 
-/// The number of rows that the key list holds. The scroll needs it, thus
-/// it cannot go past the end.
-pub fn help_rows() -> u16 {
-    // One row for each key, one for each title, one for each rule between.
-    let keys: usize = HELP.iter().map(|(_, rows)| rows.len()).sum();
-    (keys + HELP.len() * 2 - 1) as u16
+/// The largest scroll that still shows rows. The last row of the list then
+/// sits at the foot of the window. A larger number would only show empty
+/// space, thus the keys must not go past it.
+pub fn help_max_scroll(area: Rect) -> u16 {
+    let (rows, h) = help_shape(area);
+    rows.saturating_sub(h.saturating_sub(2))
 }
 
-fn render_help(frame: &mut Frame, body: Rect, scroll: u16) {
-    let w = 64.min(body.width);
-    let inner = w.saturating_sub(2) as usize;
+/// The rows the list needs after wrapping, and the height of the window.
+/// The renderer and the keys both need these, thus one place gives both.
+fn help_shape(area: Rect) -> (u16, u16) {
+    // The bar takes one row away from the body.
+    let body_height = area.height.saturating_sub(1);
+    let w = 64.min(area.width);
+    let inner = w.saturating_sub(2).max(1) as usize;
+    // A long line wraps, thus it takes more than one row.
+    let rows: u16 = help_lines(inner).iter().map(|l| l.width().div_ceil(inner).max(1) as u16).sum();
+    (rows, (rows + 2).min(body_height))
+}
+
+/// The rows of the key list. `inner` is the width inside the border.
+fn help_lines(inner: usize) -> Vec<Line<'static>> {
     let mut lines: Vec<Line> = Vec::new();
     for (i, (title, rows)) in HELP.iter().enumerate() {
         if i > 0 {
@@ -839,7 +851,14 @@ fn render_help(frame: &mut Frame, body: Rect, scroll: u16) {
             ]));
         }
     }
-    let h = (lines.len() as u16 + 2).min(body.height);
+    lines
+}
+
+fn render_help(frame: &mut Frame, body: Rect, area_for_shape: Rect, scroll: u16) {
+    let w = 64.min(body.width);
+    let inner = w.saturating_sub(2).max(1) as usize;
+    let lines = help_lines(inner);
+    let (rows, h) = help_shape(area_for_shape);
     let area = Rect {
         x: body.x + (body.width.saturating_sub(w)) / 2,
         y: body.y + (body.height.saturating_sub(h)) / 2,
@@ -849,19 +868,21 @@ fn render_help(frame: &mut Frame, body: Rect, scroll: u16) {
     // The window shows only a part of the list, thus never scroll past the
     // last row.
     let seen = h.saturating_sub(2);
-    let scroll = scroll.min((lines.len() as u16).saturating_sub(seen));
+    let scroll = scroll.min(rows.saturating_sub(seen));
     let mut block = Block::bordered()
         .title(Span::styled(" Keys ", Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)))
         .border_style(Style::new().fg(Color::Cyan));
     // Say where you are, but only when the list does not fit.
-    if (lines.len() as u16) > seen {
-        let end = (scroll + seen).min(lines.len() as u16);
-        block = block.title_bottom(
-            Line::styled(format!(" j/k  {end} of {} ", lines.len()), DIM).right_aligned(),
-        );
+    if rows > seen {
+        let end = (scroll + seen).min(rows);
+        block = block
+            .title_bottom(Line::styled(format!(" j/k  {end} of {rows} "), DIM).right_aligned());
     }
     frame.render_widget(Clear, area);
-    frame.render_widget(Paragraph::new(lines).block(block).scroll((scroll, 0)), area);
+    frame.render_widget(
+        Paragraph::new(lines).block(block).wrap(Wrap { trim: false }).scroll((scroll, 0)),
+        area,
+    );
 }
 
 #[cfg(test)]

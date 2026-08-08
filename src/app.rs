@@ -473,15 +473,16 @@ impl App {
             }
             Mode::Help { scroll } => {
                 // The list is taller than the window, thus it must move.
-                // Only a key that closes it ends the mode.
-                let last = crate::ui::help_rows().saturating_sub(1);
+                // The last row stops at the foot of the window, thus a key
+                // that does nothing never looks like a key that is stuck.
+                let last = crate::ui::help_max_scroll(self.area);
                 match key.code {
                     KeyCode::Char('j') | KeyCode::Down => *scroll = (*scroll + 1).min(last),
                     KeyCode::Char('k') | KeyCode::Up => *scroll = scroll.saturating_sub(1),
                     KeyCode::PageDown => *scroll = (*scroll + 10).min(last),
                     KeyCode::PageUp => *scroll = scroll.saturating_sub(10),
-                    KeyCode::Char('g') | KeyCode::Home => *scroll = 0,
-                    KeyCode::Char('G') | KeyCode::End => *scroll = last,
+                    KeyCode::Home => *scroll = 0,
+                    KeyCode::End => *scroll = last,
                     KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         *scroll = (*scroll + 10).min(last)
                     }
@@ -1146,6 +1147,16 @@ impl App {
     /// every mode but Normal, thus the mouse does nothing then.
     fn handle_mouse(&mut self, m: ratatui::crossterm::event::MouseEvent) {
         use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+        // The key list is taller than the window, thus the wheel moves it.
+        if let Mode::Help { scroll } = &mut self.mode {
+            let last = ui::help_max_scroll(self.area);
+            match m.kind {
+                MouseEventKind::ScrollDown => *scroll = (*scroll + 3).min(last),
+                MouseEventKind::ScrollUp => *scroll = scroll.saturating_sub(3),
+                _ => {}
+            }
+            return;
+        }
         if !matches!(self.mode, Mode::Normal) || self.zoom {
             return;
         }
@@ -2499,6 +2510,43 @@ mod tests {
         assert_eq!((app.focus, app.selected[2]), (2, 1));
         app.handle_mouse(wheel(MouseEventKind::ScrollUp, p.left[2].y + 1));
         assert_eq!(app.selected[2], 0);
+    }
+
+    /// The key list is taller than any usual window. The wheel and the keys
+    /// must both move it, and neither may go past the last row.
+    #[test]
+    fn the_key_list_scrolls_and_stops_at_the_end() {
+        use ratatui::crossterm::event::{KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
+        let mut app = demo();
+        app.area = ratatui::layout::Rect::new(0, 0, 100, 34);
+        let last = ui::help_max_scroll(app.area);
+        assert!(last > 0, "the list must be taller than the window");
+
+        app.apply(Action::Help);
+        // Far more presses than rows. The scroll stops at the last row.
+        for _ in 0..500 {
+            app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        }
+        let Mode::Help { scroll } = app.mode else { panic!("the help must stay open") };
+        assert_eq!(scroll, last, "j must stop at the last row, and not go past it");
+
+        // One press back must move at once, thus the end never feels stuck.
+        app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
+        let Mode::Help { scroll } = app.mode else { panic!("the help must stay open") };
+        assert_eq!(scroll, last - 1);
+
+        // The wheel moves it too.
+        let wheel = |kind| MouseEvent { kind, column: 10, row: 10, modifiers: KeyModifiers::NONE };
+        app.handle_mouse(wheel(MouseEventKind::ScrollUp));
+        let Mode::Help { scroll } = app.mode else { panic!("the help must stay open") };
+        assert_eq!(scroll, last - 4);
+        app.handle_mouse(wheel(MouseEventKind::ScrollDown));
+        let Mode::Help { scroll } = app.mode else { panic!("the help must stay open") };
+        assert_eq!(scroll, last - 1);
+
+        // Any other key closes it.
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert!(matches!(app.mode, Mode::Normal));
     }
 
     // The spinner turns only while a command runs, and it repeats.
