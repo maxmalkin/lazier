@@ -122,6 +122,16 @@ fn an_untracked_file_is_not_a_staged_file() {
     assert_eq!(repo.status(), [" ? new.txt"]);
 }
 
+/// A new directory must list its files, not one row for the directory.
+/// The diff pane cannot show a directory, it showed a git error instead.
+#[test]
+fn an_untracked_directory_lists_its_files() {
+    let repo = Repo::new();
+    repo.write("dir/a.txt", "a\n");
+    repo.write("dir/sub/b.txt", "b\n");
+    assert_eq!(repo.status(), [" ? dir/a.txt", " ? dir/sub/b.txt"]);
+}
+
 #[test]
 fn a_changed_file_shows_in_the_work_tree_column() {
     let repo = Repo::new();

@@ -28,7 +28,10 @@ fn scan(repo: &gix::Repository, patterns: Vec<gix::bstr::BString>) -> Option<Vec
         .status(gix::progress::Discard)
         .ok()?
         .tree_index_track_renames(gix::status::tree_index::TrackRenames::Disabled)
-        .index_worktree_rewrites(None);
+        .index_worktree_rewrites(None)
+        // List each file of a new directory. A collapsed directory row has
+        // no diff to show, and the tree pane makes the directories itself.
+        .untracked_files(gix::status::UntrackedFiles::Files);
     // The tree-index comparison walks the full HEAD tree. This is costly on
     // a large repository. Skip it when the index cache-tree shows that the
     // index is equal to the HEAD tree. Then no staged changes can exist.
