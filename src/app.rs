@@ -2228,16 +2228,22 @@ mod tests {
         terminal
     }
 
-    // A terminal that draws "✴️" in one cell drifted from ratatui, which
-    // counts two. No cell may keep the emoji selector.
+    // Terminals draw emoji sequences at widths ratatui does not expect, and
+    // the panels drifted. Each sequence must reach the terminal as its base
+    // emoji, and a flag must stay whole.
     #[test]
-    fn an_emoji_selector_does_not_reach_the_terminal() {
+    fn emoji_sequences_reach_the_terminal_as_their_base() {
         let mut app = demo();
-        app.repo.commits[0].subject = "✴\u{FE0F}🍑 send it".into();
+        app.repo.commits[0].subject =
+            "✴\u{FE0F} 👍\u{1F3FB} 👨\u{200D}👩\u{200D}👧 👩\u{1F3FD}\u{200D}💻 🇺🇸 🍑".into();
         let terminal = draw(&app, 100, 30);
-        let buf = terminal.backend().buffer();
-        assert!(buf.content.iter().all(|c| !c.symbol().contains('\u{FE0F}')));
-        assert!(buf.content.iter().any(|c| c.symbol() == "✴"));
+        let syms: Vec<&str> =
+            terminal.backend().buffer().content.iter().map(|c| c.symbol()).collect();
+        for want in ["✴", "👍", "👨", "👩", "🇺🇸", "🍑"] {
+            assert!(syms.contains(&want), "{want} is missing");
+        }
+        let extra = ['\u{FE0F}', '\u{200D}', '\u{1F3FB}', '\u{1F3FD}'];
+        assert!(syms.iter().all(|s| !s.contains(extra)));
     }
 
     #[test]

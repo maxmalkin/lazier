@@ -51,16 +51,29 @@ pub fn panes(area: Rect, show_log: bool) -> Panes {
 
 pub fn render(frame: &mut Frame, app: &App) {
     render_all(frame, app);
-    // ratatui counts "✴️" as two cells, but many terminals draw it in one.
-    // Then the cursor drifts and text spills into the next panel. Without
-    // the emoji selector every terminal draws the plain glyph, one cell.
-    // A wide emoji such as 🍑 stays two cells either way.
+    // ratatui counts each emoji sequence as two cells, but terminals do not
+    // agree: "✴️" can take one cell, "👍🏻" four, "👨‍👩‍👧" six. Then the
+    // cursor drifts and text spills into the next panel. Keep the base
+    // emoji, which every terminal draws at the same width.
+    // ponytail: drops the skin tone and the joined parts, a flag stays whole.
     for cell in &mut frame.buffer_mut().content {
-        if cell.symbol().contains('\u{FE0F}') {
-            let plain = cell.symbol().replace('\u{FE0F}', "");
+        if let Some(plain) = base_emoji(cell.symbol()) {
             cell.set_symbol(&plain);
         }
     }
+}
+
+/// The first character without the emoji selector, the skin tone, or what
+/// a joiner adds. None when the symbol has none of them.
+fn base_emoji(symbol: &str) -> Option<String> {
+    let extra = |c: &char| matches!(c, '\u{FE0F}' | '\u{200D}' | '\u{1F3FB}'..='\u{1F3FF}');
+    let mut chars = symbol.chars();
+    let first = chars.next()?;
+    if !chars.clone().any(|c| extra(&c)) {
+        return None;
+    }
+    let rest = chars.take_while(|&c| c != '\u{200D}').filter(|c| !extra(c));
+    Some(std::iter::once(first).chain(rest).collect())
 }
 
 fn render_all(frame: &mut Frame, app: &App) {
