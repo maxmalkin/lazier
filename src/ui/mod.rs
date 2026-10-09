@@ -50,6 +50,20 @@ pub fn panes(area: Rect, show_log: bool) -> Panes {
 }
 
 pub fn render(frame: &mut Frame, app: &App) {
+    render_all(frame, app);
+    // ratatui counts "✴️" as two cells, but many terminals draw it in one.
+    // Then the cursor drifts and text spills into the next panel. Without
+    // the emoji selector every terminal draws the plain glyph, one cell.
+    // A wide emoji such as 🍑 stays two cells either way.
+    for cell in &mut frame.buffer_mut().content {
+        if cell.symbol().contains('\u{FE0F}') {
+            let plain = cell.symbol().replace('\u{FE0F}', "");
+            cell.set_symbol(&plain);
+        }
+    }
+}
+
+fn render_all(frame: &mut Frame, app: &App) {
     let [body, bar] =
         Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(frame.area());
     // The zoomed graph view takes the whole body.

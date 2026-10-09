@@ -2228,6 +2228,18 @@ mod tests {
         terminal
     }
 
+    // A terminal that draws "✴️" in one cell drifted from ratatui, which
+    // counts two. No cell may keep the emoji selector.
+    #[test]
+    fn an_emoji_selector_does_not_reach_the_terminal() {
+        let mut app = demo();
+        app.repo.commits[0].subject = "✴\u{FE0F}🍑 send it".into();
+        let terminal = draw(&app, 100, 30);
+        let buf = terminal.backend().buffer();
+        assert!(buf.content.iter().all(|c| !c.symbol().contains('\u{FE0F}')));
+        assert!(buf.content.iter().any(|c| c.symbol() == "✴"));
+    }
+
     #[test]
     fn layout_80x24() {
         insta::assert_snapshot!(draw(&demo(), 80, 24).backend());
