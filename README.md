@@ -11,7 +11,7 @@
 [![ci](https://github.com/maxmalkin/lazier/actions/workflows/ci.yml/badge.svg)](https://github.com/maxmalkin/lazier/actions/workflows/ci.yml)
 [![release](https://img.shields.io/github/v/release/maxmalkin/lazier?color=green)](https://github.com/maxmalkin/lazier/releases)
 [![crates.io](https://img.shields.io/crates/v/lazier?color=orange)](https://crates.io/crates/lazier)
-[![msrv](https://img.shields.io/badge/msrv-1.85-blue)](https://www.rust-lang.org)
+[![msrv](https://img.shields.io/badge/msrv-1.88-blue)](https://www.rust-lang.org)
 [![license](https://img.shields.io/github/license/maxmalkin/lazier?color=blue)](LICENSE)
 
 A fast terminal user interface for git. Rust, [ratatui](https://ratatui.rs),
@@ -52,10 +52,11 @@ thus your hooks, credential helper, and GPG key continue to work.
 
 ## Install
 
-With Rust 1.85 or later:
+With Rust 1.88 or later. `--locked` builds with the tested dependency
+versions, thus a newer release of a dependency cannot break the install:
 
 ```sh
-cargo install lazier
+cargo install --locked lazier
 ```
 
 Or take an archive for your platform from the
