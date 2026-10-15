@@ -1,6 +1,6 @@
 [package]
 name = "lazier"
-version = "0.9.5"
+version = "0.9.6"
 edition = "2024"
 rust-version = "1.88"
 description = "A fast terminal user interface for git, written in Rust with ratatui and gitoxide"
