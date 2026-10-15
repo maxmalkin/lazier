@@ -119,8 +119,8 @@ fn render_all(frame: &mut Frame, app: &App) {
             let h = (list.len() as u16 + 2).min(body.height).max(4);
             panels::render_submodules(frame, centered(body, 76, h), list, *cursor);
         }
-        Mode::CommitMsg { summary, body: text, on_body, purpose } => {
-            render_commit(frame, body, summary, text, *on_body, purpose)
+        Mode::CommitMsg { summary, cursor, body: text, on_body, purpose } => {
+            render_commit(frame, body, summary, *cursor, text, *on_body, purpose)
         }
         _ => {}
     }
@@ -401,6 +401,7 @@ fn render_commit(
     frame: &mut Frame,
     body_area: Rect,
     summary: &str,
+    cursor: usize,
     body: &str,
     on_body: bool,
     purpose: &CommitPurpose,
@@ -426,8 +427,9 @@ fn render_commit(
     let idle = Style::new().fg(Color::DarkGray);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(summary.to_string(), Style::new().fg(Color::White)),
+            Span::styled(&summary[..cursor], Style::new().fg(Color::White)),
             Span::styled(if on_body { "" } else { "▏" }, active),
+            Span::styled(&summary[cursor..], Style::new().fg(Color::White)),
         ]))
         .block(Block::bordered().title("summary").border_style(if on_body {
             idle
@@ -561,9 +563,11 @@ fn hint_items(items: &[(&str, &str)], width: usize) -> Line<'static> {
 fn render_bar(frame: &mut Frame, area: Rect, app: &App) {
     let w = area.width as usize;
     let line = match &app.mode {
-        Mode::Input { prompt, buffer, .. } => Line::from(vec![
+        Mode::Input { prompt, buffer, cursor, .. } => Line::from(vec![
             Span::styled(format!("{prompt}: "), Style::new().fg(Color::Cyan)),
-            Span::styled(format!("{buffer}▏"), Style::new().fg(Color::White)),
+            Span::styled(&buffer[..*cursor], Style::new().fg(Color::White)),
+            Span::styled("▏", Style::new().fg(Color::White)),
+            Span::styled(&buffer[*cursor..], Style::new().fg(Color::White)),
         ]),
         // The confirm window draws its own text and keys.
         Mode::Confirm { .. } => Line::default(),
