@@ -21,7 +21,7 @@ strip = true
 
 [dependencies]
 anyhow = "1"
-gix = { version = "0.86.0", features = ["status", "max-performance-safe"] }
+gix = { version = "0.87.1", features = ["status", "max-performance-safe"] }
 notify = "8.2.0"
 ratatui = "0.30"
 
