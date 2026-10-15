@@ -6,6 +6,7 @@ use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
+use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -108,9 +109,12 @@ pub enum ConfirmAction {
 
 pub enum Mode {
     Normal,
+    /// A one-line prompt in the bar. `cursor` is the byte offset of the
+    /// cursor in the buffer.
     Input {
         prompt: &'static str,
         buffer: String,
+        cursor: usize,
         purpose: InputPurpose,
     },
     Confirm {
@@ -181,8 +185,10 @@ pub enum Mode {
         cursor: usize,
     },
     /// The commit message window. It has a summary line and a body.
+    /// `cursor` is the byte offset of the cursor in the summary.
     CommitMsg {
         summary: String,
+        cursor: usize,
         body: String,
         on_body: bool,
         purpose: CommitPurpose,
@@ -225,6 +231,10 @@ pub struct App {
     pub first_parent: bool,
     /// The commands that run now. The bar shows them.
     pub running: Vec<String>,
+    /// The shell commands of this session, oldest first. `shell_at` is the
+    /// one in the prompt. It equals the length for a new command.
+    shell_history: Vec<String>,
+    shell_at: usize,
     /// Counts up while a command runs. It moves the spinner.
     tick: usize,
     /// The size of the terminal at the last draw. The mouse needs it to
@@ -277,6 +287,8 @@ impl App {
             show_log: true,
             first_parent: false,
             running: Vec::new(),
+            shell_history: Vec::new(),
+            shell_at: 0,
             tick: 0,
             area: ratatui::layout::Rect::ZERO,
             rebase: None,
@@ -300,6 +312,12 @@ impl App {
         let (tx, rx) = mpsc::channel();
         event::spawn_input(tx.clone(), self.pause.clone());
         let git = git::spawn(tx.clone())?;
+        if let Ok(text) = std::fs::read_to_string(git.git_dir.join(SHELL_HISTORY)) {
+            // ponytail: the file only grows, it keeps a line per command.
+            let lines: Vec<&str> = text.lines().collect();
+            let keep = lines.len().saturating_sub(SHELL_HISTORY_KEEP);
+            self.shell_history = lines[keep..].iter().map(|l| l.to_string()).collect();
+        }
         git::watch::spawn(git.git_dir.clone(), tx.clone());
         git::watch::spawn_worktree(git.root.clone(), tx.clone());
         self.git = Some(git);
@@ -669,18 +687,14 @@ impl App {
                 }
                 _ => {}
             },
-            Mode::CommitMsg { summary, body, on_body, .. } => match key.code {
+            Mode::CommitMsg { summary, cursor, body, on_body, .. } => match key.code {
                 KeyCode::Esc => self.mode = Mode::Normal,
                 // Tab moves between the summary line and the body.
                 KeyCode::Tab | KeyCode::BackTab => *on_body = !*on_body,
                 KeyCode::Down if !*on_body => *on_body = true,
                 KeyCode::Up if *on_body => *on_body = false,
-                KeyCode::Backspace => {
-                    if *on_body {
-                        body.pop()
-                    } else {
-                        summary.pop()
-                    };
+                KeyCode::Backspace if *on_body => {
+                    body.pop();
                 }
                 // The enter key makes a new line in the body. In the summary
                 // line it sends the commit.
@@ -693,12 +707,10 @@ impl App {
                     };
                     self.submit_commit(summary, body, purpose);
                 }
-                KeyCode::Char(c) => {
-                    if *on_body {
-                        body.push(c)
-                    } else {
-                        summary.push(c)
-                    }
+                KeyCode::Char(c) if *on_body => body.push(c),
+                // The summary is one line with a cursor.
+                code if !*on_body => {
+                    edit_line(summary, cursor, code);
                 }
                 _ => {}
             },
@@ -735,12 +747,23 @@ impl App {
                 }
                 _ => {}
             },
-            Mode::Input { buffer, .. } => match key.code {
+            Mode::Input { buffer, cursor, purpose, .. } => match key.code {
                 KeyCode::Esc => self.mode = Mode::Normal,
-                KeyCode::Backspace => {
-                    buffer.pop();
+                // The arrows go through the earlier shell commands. Past the
+                // newest one the prompt is empty again.
+                KeyCode::Up if matches!(purpose, InputPurpose::Shell) && self.shell_at > 0 => {
+                    self.shell_at -= 1;
+                    *buffer = self.shell_history[self.shell_at].clone();
+                    *cursor = buffer.len();
                 }
-                KeyCode::Char(c) => buffer.push(c),
+                KeyCode::Down
+                    if matches!(purpose, InputPurpose::Shell)
+                        && self.shell_at < self.shell_history.len() =>
+                {
+                    self.shell_at += 1;
+                    *buffer = self.shell_history.get(self.shell_at).cloned().unwrap_or_default();
+                    *cursor = buffer.len();
+                }
                 KeyCode::Enter => {
                     let Mode::Input { buffer, purpose, .. } =
                         std::mem::replace(&mut self.mode, Mode::Normal)
@@ -749,7 +772,9 @@ impl App {
                     };
                     self.submit_input(purpose, buffer);
                 }
-                _ => {}
+                code => {
+                    edit_line(buffer, cursor, code);
+                }
             },
             Mode::Confirm { .. } => match key.code {
                 KeyCode::Char('y') => {
@@ -883,6 +908,16 @@ impl App {
             return;
         }
         if let InputPurpose::Shell = purpose {
+            if self.shell_history.last() != Some(&buffer) {
+                self.shell_history.push(buffer.clone());
+                // The history outlives the session. A failed write only
+                // loses the history, thus it is not an error.
+                if let Some(git) = &self.git {
+                    let path = git.git_dir.join(SHELL_HISTORY);
+                    let file = std::fs::OpenOptions::new().create(true).append(true).open(path);
+                    let _ = file.and_then(|mut f| writeln!(f, "{buffer}"));
+                }
+            }
             self.running.push(format!(": {buffer}"));
             if let Some(git) = &self.git {
                 git.send(Req::Shell(buffer));
@@ -912,6 +947,7 @@ impl App {
     fn open_commit_window(&mut self) {
         self.mode = Mode::CommitMsg {
             summary: String::new(),
+            cursor: 0,
             body: String::new(),
             on_body: false,
             purpose: CommitPurpose::New,
@@ -1641,6 +1677,7 @@ impl App {
                     self.mode = Mode::Input {
                         prompt: "name for the tag",
                         buffer: String::new(),
+                        cursor: 0,
                         purpose: InputPurpose::Tag(c.id_str().to_string()),
                     };
                 }
@@ -1671,6 +1708,7 @@ impl App {
                 self.mode = Mode::Input {
                     prompt: "search the commit messages",
                     buffer: String::new(),
+                    cursor: 0,
                     purpose: InputPurpose::Search,
                 };
             }
@@ -1718,6 +1756,7 @@ impl App {
                 self.mode = Mode::Input {
                     prompt: "new branch name",
                     buffer: String::new(),
+                    cursor: 0,
                     purpose: InputPurpose::NewBranch,
                 };
             }
@@ -1741,6 +1780,7 @@ impl App {
                     self.mode = Mode::Input {
                         prompt: "new name for the branch",
                         buffer: b.name.clone(),
+                        cursor: b.name.len(),
                         purpose: InputPurpose::RenameBranch(b.name.clone()),
                     };
                 }
@@ -1823,9 +1863,11 @@ impl App {
             Action::Pull => self.write(svec(&["pull"])),
             Action::Fetch => self.write(svec(&["fetch"])),
             Action::ShellPrompt => {
+                self.shell_at = self.shell_history.len();
                 self.mode = Mode::Input {
                     prompt: "shell command",
                     buffer: String::new(),
+                    cursor: 0,
                     purpose: InputPurpose::Shell,
                 };
             }
@@ -1995,6 +2037,7 @@ impl App {
                     None => (text, String::new()),
                 };
                 self.mode = Mode::CommitMsg {
+                    cursor: summary.len(),
                     summary,
                     body,
                     on_body: false,
@@ -2115,6 +2158,34 @@ impl App {
 // True when the point sits inside the rectangle.
 fn contains(r: ratatui::layout::Rect, x: u16, y: u16) -> bool {
     x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height
+}
+
+/// The file in the git directory that keeps the shell commands, and how
+/// many of them the prompt recalls.
+const SHELL_HISTORY: &str = "lazier-shell-history";
+const SHELL_HISTORY_KEEP: usize = 500;
+
+/// Edit one line of text. `cursor` is a byte offset, and it moves one
+/// character at a time, thus an edit never splits a character. Other keys
+/// do nothing.
+fn edit_line(text: &mut String, cursor: &mut usize, code: KeyCode) {
+    match code {
+        KeyCode::Left => *cursor -= text[..*cursor].chars().next_back().map_or(0, char::len_utf8),
+        KeyCode::Right => *cursor += text[*cursor..].chars().next().map_or(0, char::len_utf8),
+        KeyCode::Home => *cursor = 0,
+        KeyCode::End => *cursor = text.len(),
+        KeyCode::Backspace => {
+            if let Some(c) = text[..*cursor].chars().next_back() {
+                *cursor -= c.len_utf8();
+                text.remove(*cursor);
+            }
+        }
+        KeyCode::Char(c) => {
+            text.insert(*cursor, c);
+            *cursor += c.len_utf8();
+        }
+        _ => {}
+    }
 }
 
 fn svec(args: &[&str]) -> Vec<String> {
@@ -2301,6 +2372,7 @@ mod tests {
         let mut app = demo();
         app.mode = Mode::CommitMsg {
             summary: "feat: add the commit window".into(),
+            cursor: "feat: add the commit window".len(),
             body: "The window has a summary line and a body.".into(),
             on_body: true,
             purpose: CommitPurpose::New,
@@ -2313,11 +2385,75 @@ mod tests {
         let mut app = demo();
         app.mode = Mode::CommitMsg {
             summary: "fix: the old summary".into(),
+            cursor: "fix: the old summary".len(),
             body: String::new(),
             on_body: false,
             purpose: CommitPurpose::Reword(0),
         };
         insta::assert_snapshot!(draw(&app, 100, 30).backend());
+    }
+
+    // The arrows, home and end move the cursor in the summary, and typing
+    // goes in at the cursor. A wide character must not split.
+    #[test]
+    fn the_summary_cursor_edits_in_the_middle() {
+        use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
+        let mut app = demo();
+        app.open_commit_window();
+        let mut key = |code| app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+        for c in "fix: é bug".chars() {
+            key(KeyCode::Char(c));
+        }
+        for _ in 0..4 {
+            key(KeyCode::Left);
+        }
+        key(KeyCode::Backspace);
+        key(KeyCode::Char('a'));
+        key(KeyCode::Right);
+        key(KeyCode::Right);
+        key(KeyCode::Right);
+        key(KeyCode::Right);
+        key(KeyCode::Char('s'));
+        key(KeyCode::Home);
+        key(KeyCode::Char('!'));
+        key(KeyCode::End);
+        key(KeyCode::Char('.'));
+        match &app.mode {
+            Mode::CommitMsg { summary, cursor, .. } => {
+                assert_eq!(summary, "!fix: a bugs.");
+                assert_eq!(*cursor, summary.len());
+            }
+            _ => panic!("expected the commit window"),
+        }
+    }
+
+    // Up and down in the shell prompt go through the earlier commands.
+    #[test]
+    fn the_shell_prompt_recalls_earlier_commands() {
+        use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
+        let mut app = demo();
+        for cmd in ["ls", "make", "make"] {
+            app.apply(Action::ShellPrompt);
+            for c in cmd.chars() {
+                app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+            }
+            app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        }
+        app.apply(Action::ShellPrompt);
+        let mut seen = Vec::new();
+        for code in [KeyCode::Up, KeyCode::Up, KeyCode::Up, KeyCode::Down, KeyCode::Down] {
+            app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+            let Mode::Input { buffer, .. } = &app.mode else { panic!("expected the prompt") };
+            seen.push(buffer.clone());
+        }
+        // A repeat is kept once, and past the newest the prompt is empty.
+        assert_eq!(seen, ["make", "ls", "ls", "make", ""]);
+        // A recalled command can be edited in the middle.
+        for code in [KeyCode::Up, KeyCode::Home, KeyCode::Right, KeyCode::Char('o')] {
+            app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+        }
+        let Mode::Input { buffer, .. } = &app.mode else { panic!("expected the prompt") };
+        assert_eq!(buffer, "moake");
     }
 
     // A commit with nothing to commit must say so, not open a window that
@@ -2875,6 +3011,7 @@ mod tests {
         let mut app = demo();
         app.mode = Mode::CommitMsg {
             summary: "feat: half typed".into(),
+            cursor: "feat: half typed".len(),
             body: String::new(),
             on_body: false,
             purpose: CommitPurpose::New,
@@ -3017,6 +3154,7 @@ mod tests {
         app.mode = Mode::Input {
             prompt: "new branch name",
             buffer: "feature/x".into(),
+            cursor: "feature/x".len(),
             purpose: InputPurpose::NewBranch,
         };
         insta::assert_snapshot!(draw(&app, 80, 24).backend());
